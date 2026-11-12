@@ -141,6 +141,36 @@ describe('request context', () => {
     expect(context.parentTrace).toBeUndefined();
   });
 
+  it('trusts the request ID and the trace separately', () => {
+    const headers = { 'x-request-id': 'caller-id', traceparent: VALID, tracestate: 'vendor=1' };
+    const traceOnly = createRequestContext(headers, { trustInboundRequestId: false, trustInboundTrace: true, generateRequestId: () => 'own' });
+    expect(traceOnly.requestId).toBe('own');
+    expect(traceOnly.parentTrace?.spanId).toBe('00f067aa0ba902b7');
+    expect(traceOnly.trace.traceId).toBe('4bf92f3577b34da6a3ce929d0e0e4736');
+    expect(traceOnly.tracestate).toBe('vendor=1');
+    const idOnly = createRequestContext(headers, { trustInboundRequestId: true, trustInboundTrace: false });
+    expect(idOnly.requestId).toBe('caller-id');
+    expect(idOnly.parentTrace).toBeUndefined();
+    expect(idOnly.tracestate).toBeUndefined();
+    expect(idOnly.trace.traceId).not.toBe('4bf92f3577b34da6a3ce929d0e0e4736');
+  });
+
+  it('defaults each trust setting to trustInbound', () => {
+    const headers = { 'x-request-id': 'caller-id', traceparent: VALID };
+    const edgeTrace = createRequestContext(headers, { trustInbound: false, trustInboundTrace: true });
+    expect(edgeTrace.requestId).not.toBe('caller-id');
+    expect(edgeTrace.parentTrace).toBeDefined();
+    const edgeId = createRequestContext(headers, { trustInbound: false, trustInboundRequestId: true });
+    expect(edgeId.requestId).toBe('caller-id');
+    expect(edgeId.parentTrace).toBeUndefined();
+    const trustedNoTrace = createRequestContext(headers, { trustInbound: true, trustInboundTrace: false });
+    expect(trustedNoTrace.requestId).toBe('caller-id');
+    expect(trustedNoTrace.parentTrace).toBeUndefined();
+    const defaults = createRequestContext(headers);
+    expect(defaults.requestId).toBe('caller-id');
+    expect(defaults.parentTrace).toBeDefined();
+  });
+
   it('is available through async work and isolated between requests', async () => {
     expect(getRequestContext()).toBeUndefined();
     expect(currentRequestId()).toBeUndefined();

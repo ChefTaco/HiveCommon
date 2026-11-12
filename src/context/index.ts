@@ -188,17 +188,31 @@ export interface RequestContext {
 export interface CreateRequestContextOptions {
   /**
    * Accept the inbound request ID and trace context. Defaults to true; set false on an edge
-   * service that must not let the public internet choose its IDs.
+   * service that must not let the public internet choose its IDs. The two settings below
+   * override it for one of the two.
    */
   readonly trustInbound?: boolean;
+  /**
+   * Accept an inbound `x-request-id` (or `x-hive-request-id`, `x-correlation-id`). Defaults to
+   * `trustInbound`. When false, every request gets a generated ID.
+   */
+  readonly trustInboundRequestId?: boolean;
+  /**
+   * Continue an inbound `traceparent` and `tracestate`. Defaults to `trustInbound`. When false,
+   * every request starts a new trace. An internet-facing service can set this true with
+   * `trustInboundRequestId: false` to join a caller's trace while choosing its own request IDs.
+   */
+  readonly trustInboundTrace?: boolean;
   readonly generateRequestId?: () => string;
   readonly now?: () => number;
 }
 
 export function createRequestContext(headers: HeaderSource, options: CreateRequestContextOptions = {}): RequestContext {
   const trust = options.trustInbound ?? true;
-  const requestId = (trust ? readRequestId(headers) : undefined) ?? (options.generateRequestId ?? generateRequestId)();
-  const parentTrace = trust ? parseTraceparent(readHeader(headers, HIVE_HEADERS.traceparent)) : undefined;
+  const trustRequestId = options.trustInboundRequestId ?? trust;
+  const trustTrace = options.trustInboundTrace ?? trust;
+  const requestId = (trustRequestId ? readRequestId(headers) : undefined) ?? (options.generateRequestId ?? generateRequestId)();
+  const parentTrace = trustTrace ? parseTraceparent(readHeader(headers, HIVE_HEADERS.traceparent)) : undefined;
   const rawState = parentTrace ? readHeader(headers, HIVE_HEADERS.tracestate)?.trim() : undefined;
   // eslint-disable-next-line no-control-regex
   const tracestate = rawState && rawState.length <= 512 && !/[\u0000-\u001f\u007f]/.test(rawState) ? rawState : undefined;
