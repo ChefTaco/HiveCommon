@@ -106,7 +106,7 @@ function assertLiveBody(value: unknown): void {
  */
 export function liveness<L extends object = LiveBody>(options: HealthOptions<L> = {}): HealthResponse<L> {
   assertLiveBody(options.liveBody);
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => Date.now());
   const standard: LiveBody = { status: 'live', ...identity(options), time: new Date(now()).toISOString() };
   const custom = options.liveBody;
   const body = custom === undefined ? standard : typeof custom === 'function' ? custom(standard) : { ...custom };
@@ -144,7 +144,7 @@ async function runCheck(check: HealthCheck, defaultTimeout: number, exposeErrors
 
 /** Run every check concurrently and build the readiness response: 503 if a critical check is down. */
 export async function readiness(options: HealthOptions<object> = {}): Promise<HealthResponse<ReadyBody>> {
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => Date.now());
   const checks = options.checks ?? [];
   const names = new Set<string>();
   for (const check of checks) {

@@ -221,7 +221,7 @@ export function createRequestContext(headers: HeaderSource, options: CreateReque
     trace: parentTrace ? childTraceparent(parentTrace) : generateTraceparent(),
     parentTrace,
     tracestate,
-    startedAt: (options.now ?? Date.now)(),
+    startedAt: options.now ? options.now() : Date.now(),
     bindings: {},
   };
 }
