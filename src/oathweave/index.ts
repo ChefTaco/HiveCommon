@@ -18,6 +18,7 @@ export {
   type VerifyOptions,
 } from './verifier.js';
 export {
+  CLIENT_ID_CLAIMS,
   clientIdOf,
   extractRoles,
   extractScopes,
@@ -25,6 +26,7 @@ export {
   principalKindOf,
   type AcceptPrincipal,
   type ClaimPolicy,
+  type ClientIdClaim,
   type OathweavePrincipal,
   type OathweaveServicePrincipal,
   type OathweaveUserPrincipal,

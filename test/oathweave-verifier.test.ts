@@ -45,6 +45,8 @@ describe('configuration', () => {
     expect(() => verifier({ audience: '' })).toThrow(/audience/);
     expect(() => verifier({ clockToleranceSec: -1 })).toThrow(/clockTolerance/);
     expect(() => verifier({ maxLifetimeSec: 0 })).toThrow(/maxLifetime/);
+    expect(() => verifier({ requireRoles: 'yes' as never })).toThrow(/requireRoles/);
+    expect(() => verifier({ clientIdClaim: 'client' as never })).toThrow(/clientIdClaim/);
   });
 
   it('allows loopback http only when explicitly enabled', () => {
@@ -128,6 +130,61 @@ describe('user tokens', () => {
 
   it('refuses a service token by default', async () => {
     expect(await reason(verifier().verify(await mint(keys, serviceClaims())))).toBe('wrong_principal_kind');
+  });
+});
+
+describe('strict legacy claim options', () => {
+  it('requireRoles refuses a token without a roles claim', async () => {
+    const strict = verifier({ requireRoles: true });
+    expect(await reason(strict.verify(await mint(keys, userClaims({ roles: undefined }))))).toBe('invalid_claims');
+    expect(await reason(strict.verify(await mint(keys, userClaims({ roles: 'ADMIN' }))))).toBe('invalid_claims');
+    expect((await strict.verify(await mint(keys, userClaims({ roles: [] })))).roles).toEqual([]);
+    expect((await strict.verify(await mint(keys, userClaims()))).roles).toEqual(['VIEWER']);
+    expect(await reason(verifier({ requireRoles: true, accept: 'service' }).verify(await mint(keys, serviceClaims('ardent-studio', { roles: undefined }))))).toBe('invalid_claims');
+  });
+
+  it('requireRoles false keeps the default: an absent roles claim is no roles', async () => {
+    expect((await verifier({ requireRoles: false }).verify(await mint(keys, userClaims({ roles: undefined })))).roles).toEqual([]);
+  });
+
+  it('clientIdClaim clientId accepts only the camel-case claim', async () => {
+    const strict = verifier({ clientIdClaim: 'clientId' });
+    expect((await strict.verify(await mint(keys, userClaims()))).clientId).toBe('hivexui');
+    expect((await strict.verify(await mint(keys, userClaims({ client_id: 'hivexui' })))).clientId).toBe('hivexui');
+    expect(await reason(strict.verify(await mint(keys, userClaims({ clientId: undefined, client_id: 'hivexui' }))))).toBe('invalid_claims');
+    expect(await reason(strict.verify(await mint(keys, userClaims({ client_id: 'other' }))))).toBe('invalid_claims');
+  });
+
+  it('clientIdClaim client_id accepts only the RFC 9068 claim', async () => {
+    const strict = verifier({ clientIdClaim: 'client_id' });
+    expect((await strict.verify(await mint(keys, userClaims({ clientId: undefined, client_id: 'hivexui' })))).clientId).toBe('hivexui');
+    expect(await reason(strict.verify(await mint(keys, userClaims())))).toBe('invalid_claims');
+    expect(await reason(strict.verify(await mint(keys, userClaims({ client_id: 'other' }))))).toBe('invalid_claims');
+  });
+
+  it('clientIdClaim either is the default', async () => {
+    const either = verifier({ clientIdClaim: 'either' });
+    expect((await either.verify(await mint(keys, userClaims({ clientId: undefined, client_id: 'hivexui' })))).clientId).toBe('hivexui');
+    expect((await either.verify(await mint(keys, userClaims()))).clientId).toBe('hivexui');
+  });
+
+  it('classifies service tokens by the accepted client claim only', async () => {
+    const snakeService = await mint(keys, serviceClaims('ardent-studio', { clientId: undefined, client_id: 'ardent-studio' }), { sub: 'ardent-studio' });
+    expect((await verifier({ accept: 'service' }).verify(snakeService)).kind).toBe('service');
+    expect((await verifier({ accept: 'service', clientIdClaim: 'client_id' }).verify(snakeService)).kind).toBe('service');
+    expect(await reason(verifier({ accept: 'any', clientIdClaim: 'clientId' }).verify(snakeService))).toBe('invalid_claims');
+  });
+
+  it('combines with clockToleranceSec 0 and sessionCacheTtlMs 0 for products that kept them', async () => {
+    const stub = stubFetch({ [USERINFO_URL]: () => Response.json({ sub: 'user-subject' }) });
+    const v = verifier({
+      clockToleranceSec: 0, sessionCacheTtlMs: 0, requireRoles: true, clientIdClaim: 'clientId', userinfoUrl: USERINFO_URL, fetch: stub.fetch,
+    });
+    const token = await mint(keys, userClaims());
+    await v.verify(token);
+    await v.verify(token);
+    expect(stub.calls).toHaveLength(2);
+    expect(await reason(v.verify(await mint(keys, userClaims(), { iat: NOW_SEC - 600, exp: NOW_SEC - 1 })))).toBe('expired');
   });
 });
 
