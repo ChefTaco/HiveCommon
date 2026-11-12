@@ -18,7 +18,7 @@ import {
   type RequestContext,
 } from '../context/index.js';
 import { defaultCodeForStatus, defaultMessageForStatus, HiveError, toErrorResponse } from '../errors/index.js';
-import { createHealth, type HealthOptions } from '../health/index.js';
+import { createHealth, type HealthOptions, type LiveBody } from '../health/index.js';
 import type { Logger } from '../log/index.js';
 import type { AcceptPrincipal, OathweavePrincipal } from '../oathweave/claims.js';
 import { OathweaveError } from '../oathweave/errors.js';
@@ -146,8 +146,11 @@ export function notFoundHandler(): NotFoundHandler {
   return c => respond(c, HiveError.notFound(), {});
 }
 
-/** Serve `/health/live`, `/health/ready` and any aliases on `app` (GET and HEAD). */
-export function registerHealthRoutes<E extends Env>(app: Hono<E>, options: HealthOptions = {}): void {
+/**
+ * Serve `/health/live`, `/health/ready` and any aliases on `app` (GET and HEAD). Set
+ * `liveBody` to keep a product's published liveness body.
+ */
+export function registerHealthRoutes<E extends Env, L extends object = LiveBody>(app: Hono<E>, options: HealthOptions<L> = {}): void {
   const health = createHealth(options);
   const serve = (kind: 'live' | 'ready') => async (c: Context<E>): Promise<Response> => {
     const result = kind === 'live' ? health.live() : await health.ready();

@@ -59,7 +59,14 @@ export interface HealthResponse<B> {
   readonly headers: Readonly<Record<string, string>>;
 }
 
-export interface HealthOptions {
+/**
+ * A product's own liveness body, in place of the standard `LiveBody`: an object served as is,
+ * or a function called on every liveness request with the standard body.
+ */
+export type LiveBodyOverride<L extends object> = L | ((standard: LiveBody) => L);
+
+/** `L` is the liveness body type: `LiveBody` unless `liveBody` is set. */
+export interface HealthOptions<L extends object = LiveBody> {
   readonly service?: string;
   readonly version?: string;
   readonly checks?: readonly HealthCheck[];
@@ -73,18 +80,37 @@ export interface HealthOptions {
   /** Also serve the legacy paths in `LEGACY_HEALTH_ALIASES`, or a custom alias map. */
   readonly aliases?: boolean | Partial<Readonly<Record<HealthKind, readonly string[]>>>;
   readonly now?: () => number;
+  /**
+   * Serve this body from `/health/live` instead of the standard one, for a product that keeps
+   * a published liveness body such as `{ status: 'ok' }`. The status (200) and headers are
+   * unchanged, and liveness still never runs checks. Readiness is not affected.
+   */
+  readonly liveBody?: LiveBodyOverride<L>;
 }
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } as const;
 
-function identity(options: HealthOptions): { service?: string; version?: string } {
+function identity(options: HealthOptions<object>): { service?: string; version?: string } {
   return { ...(options.service ? { service: options.service } : {}), ...(options.version ? { version: options.version } : {}) };
 }
 
-/** The liveness response: 200 whenever the process can answer. It never runs checks. */
-export function liveness(options: HealthOptions = {}): HealthResponse<LiveBody> {
+function assertLiveBody(value: unknown): void {
+  if (value !== undefined && typeof value !== 'function' && (typeof value !== 'object' || value === null || Array.isArray(value))) {
+    throw new TypeError('liveBody must be an object or a function');
+  }
+}
+
+/**
+ * The liveness response: 200 whenever the process can answer. It never runs checks. The body
+ * is the standard `LiveBody`, or the product's own when `liveBody` is set.
+ */
+export function liveness<L extends object = LiveBody>(options: HealthOptions<L> = {}): HealthResponse<L> {
+  assertLiveBody(options.liveBody);
   const now = options.now ?? Date.now;
-  return { status: 200, body: { status: 'live', ...identity(options), time: new Date(now()).toISOString() }, headers: HEADERS };
+  const standard: LiveBody = { status: 'live', ...identity(options), time: new Date(now()).toISOString() };
+  const custom = options.liveBody;
+  const body = custom === undefined ? standard : typeof custom === 'function' ? custom(standard) : { ...custom };
+  return { status: 200, body: body as L, headers: HEADERS };
 }
 
 class CheckTimeout extends Error {}
@@ -117,7 +143,7 @@ async function runCheck(check: HealthCheck, defaultTimeout: number, exposeErrors
 }
 
 /** Run every check concurrently and build the readiness response: 503 if a critical check is down. */
-export async function readiness(options: HealthOptions = {}): Promise<HealthResponse<ReadyBody>> {
+export async function readiness(options: HealthOptions<object> = {}): Promise<HealthResponse<ReadyBody>> {
   const now = options.now ?? Date.now;
   const checks = options.checks ?? [];
   const names = new Set<string>();
@@ -161,16 +187,18 @@ function aliasMap(aliases: HealthOptions['aliases']): Record<HealthKind, readonl
   return { live: aliases.live ?? [], ready: aliases.ready ?? [] };
 }
 
-export interface Health {
-  live(): HealthResponse<LiveBody>;
+/** `L` is the liveness body type: `LiveBody` unless `liveBody` was set. */
+export interface Health<L extends object = LiveBody> {
+  live(): HealthResponse<L>;
   ready(): Promise<HealthResponse<ReadyBody>>;
   /** The response for a health path, or undefined when the path is not a health path. */
-  handle(pathname: string): Promise<HealthResponse<LiveBody | ReadyBody>> | undefined;
+  handle(pathname: string): Promise<HealthResponse<L | ReadyBody>> | undefined;
   readonly paths: Readonly<Record<HealthKind, readonly string[]>>;
 }
 
 /** Bind options once and serve both endpoints. */
-export function createHealth(options: HealthOptions = {}): Health {
+export function createHealth<L extends object = LiveBody>(options: HealthOptions<L> = {}): Health<L> {
+  assertLiveBody(options.liveBody);
   return {
     live: () => liveness(options),
     ready: () => readiness(options),

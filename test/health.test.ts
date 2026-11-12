@@ -13,6 +13,43 @@ describe('liveness', () => {
     });
     expect(liveness().body).not.toHaveProperty('service');
   });
+
+  it('serves a product body object as is', () => {
+    const published = { status: 'ok' };
+    const response = liveness({ service: 'studio', now, liveBody: published });
+    expect(response).toEqual({
+      status: 200,
+      body: { status: 'ok' },
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    });
+    expect(response.body).not.toBe(published);
+    const typed: { status: string } = response.body;
+    expect(typed.status).toBe('ok');
+  });
+
+  it('builds a product body from the standard one on every call', () => {
+    let calls = 0;
+    const options = {
+      service: 'hive-skills', version: '1.3.5', now,
+      liveBody: (standard: { service?: string; version?: string }) => ({ version: standard.version, status: 'ok', service: standard.service, protocol: 1, call: ++calls }),
+    };
+    expect(liveness(options).body).toEqual({ version: '1.3.5', status: 'ok', service: 'hive-skills', protocol: 1, call: 1 });
+    expect(liveness(options).body.call).toBe(2);
+  });
+
+  it('refuses a liveBody that is not an object or a function', () => {
+    for (const value of ['ok', 1, null, ['ok']]) {
+      expect(() => liveness({ liveBody: value as never })).toThrow(/liveBody/);
+      expect(() => createHealth({ liveBody: value as never })).toThrow(/liveBody/);
+    }
+  });
+
+  it('leaves readiness unchanged', async () => {
+    const health = createHealth({ now, liveBody: { status: 'ok' } });
+    expect(health.live().body).toEqual({ status: 'ok' });
+    expect(await health.handle('/health/live')).toMatchObject({ status: 200, body: { status: 'ok' } });
+    expect((await health.ready()).body).toEqual({ status: 'ready', time: '2026-01-01T00:00:00.000Z', checks: {} });
+  });
 });
 
 describe('readiness', () => {

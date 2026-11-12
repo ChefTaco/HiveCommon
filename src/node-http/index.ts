@@ -74,8 +74,11 @@ export function sendError(res: ServerResponse, error: unknown, options: SendErro
   sendJson(res, response.status, response.body, response.headers);
 }
 
-/** Serve a health path. Returns true when `req` was a health request and has been answered. */
-export async function handleHealth(req: IncomingMessage, res: ServerResponse, health: Health): Promise<boolean> {
+/**
+ * Serve a health path. Returns true when `req` was a health request and has been answered.
+ * The liveness body is the one `health` was created with (see `liveBody`).
+ */
+export async function handleHealth(req: IncomingMessage, res: ServerResponse, health: Health<object>): Promise<boolean> {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
   const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
   const pending = health.handle(pathname);
@@ -87,7 +90,7 @@ export async function handleHealth(req: IncomingMessage, res: ServerResponse, he
 
 export interface HiveHandlerOptions extends CreateRequestContextOptions {
   /** Serve health endpoints before `handler` runs. */
-  readonly health?: HealthOptions | Health;
+  readonly health?: HealthOptions<object> | Health<object>;
   readonly logger?: Pick<Logger, 'error'>;
   /** Echo `x-request-id` on every response. Defaults to true. */
   readonly responseHeader?: boolean;
@@ -95,8 +98,8 @@ export interface HiveHandlerOptions extends CreateRequestContextOptions {
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => unknown;
 
-function isHealth(value: HealthOptions | Health): value is Health {
-  return typeof (value as Health).handle === 'function';
+function isHealth(value: HealthOptions<object> | Health<object>): value is Health<object> {
+  return typeof (value as Health<object>).handle === 'function';
 }
 
 /**
