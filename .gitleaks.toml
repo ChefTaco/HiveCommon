@@ -1,0 +1,26 @@
+title = "Repository secret scanning"
+
+[extend]
+useDefault = true
+
+# The Oathweave conformance vectors are synthetic JWTs for the example.test issuer, signed by
+# keys that were discarded after generation (scripts/generate-test-vectors.mjs). The exception
+# covers only that one file and only tokens whose protected header is one of the four exact
+# synthetic headers the generator writes (kid conformance-1 / conformance-unknown, alg none,
+# HS256 confusion). Any other JWT anywhere in the repository is still reported.
+#
+# This is scoped to the jwt rule: a global allowlist path skips the whole file regardless of
+# `condition`, which would hide any other secret placed in it.
+[[rules]]
+id = "jwt"
+[[rules.allowlists]]
+description = "Synthetic Oathweave conformance tokens; exact headers and file only."
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^test-vectors/oathweave/vectors\.json$''']
+regexes = [
+  '''^eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ\.''',
+  '''^eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLXVua25vd24iLCJ0eXAiOiJKV1QifQ\.''',
+  '''^eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0\.''',
+  '''^eyJhbGciOiJIUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ\.''',
+]

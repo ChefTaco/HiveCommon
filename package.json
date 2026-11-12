@@ -1,0 +1,128 @@
+{
+  "name": "@hivemagnus/hive-common",
+  "version": "0.1.0",
+  "description": "Shared server kit for the Hive:Magnus suite: Oathweave token verification, error envelope, health, request context, registry client, logging, events and framework adapters",
+  "keywords": [
+    "hive",
+    "magnus",
+    "oathweave",
+    "jwt",
+    "jwks",
+    "error-envelope",
+    "health",
+    "traceparent",
+    "hono"
+  ],
+  "author": "ChefTaco",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChefTaco/HiveCommon.git"
+  },
+  "homepage": "https://github.com/ChefTaco/HiveCommon#readme",
+  "bugs": {
+    "url": "https://github.com/ChefTaco/HiveCommon/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./oathweave": {
+      "types": "./dist/oathweave/index.d.ts",
+      "default": "./dist/oathweave/index.js"
+    },
+    "./oathweave/conformance": {
+      "types": "./dist/oathweave/conformance.d.ts",
+      "default": "./dist/oathweave/conformance.js"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "default": "./dist/errors/index.js"
+    },
+    "./health": {
+      "types": "./dist/health/index.d.ts",
+      "default": "./dist/health/index.js"
+    },
+    "./context": {
+      "types": "./dist/context/index.d.ts",
+      "default": "./dist/context/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "default": "./dist/registry/index.js"
+    },
+    "./log": {
+      "types": "./dist/log/index.d.ts",
+      "default": "./dist/log/index.js"
+    },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "default": "./dist/events/index.js"
+    },
+    "./contracts": {
+      "types": "./dist/contracts/index.d.ts",
+      "default": "./dist/contracts/index.js"
+    },
+    "./hono": {
+      "types": "./dist/hono/index.d.ts",
+      "default": "./dist/hono/index.js"
+    },
+    "./node-http": {
+      "types": "./dist/node-http/index.d.ts",
+      "default": "./dist/node-http/index.js"
+    },
+    "./test-vectors/*": "./test-vectors/*",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": "^24.22.3 || ^26.13.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "test-vectors",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src test scripts",
+    "vectors:generate": "node scripts/generate-test-vectors.mjs",
+    "pack:check": "node scripts/check-package.mjs",
+    "scan:secrets": "bash scripts/scan-secrets.sh",
+    "check:private": "bash scripts/check-private-data.sh",
+    "privacy:test": "node --test scripts/test-privacy-policy.mjs scripts/test-publish-environment.mjs scripts/test-publish-package.mjs",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "verify": "npm run privacy:test && npm run scan:secrets && npm run check:private && npm run typecheck && npm run lint && npm test && npm run build && npm run pack:check"
+  },
+  "dependencies": {
+    "jose": "^6.2.15"
+  },
+  "peerDependencies": {
+    "hono": "^4.13.18"
+  },
+  "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@vitest/coverage-v8": "^5.1.0",
+    "eslint": "10.14.0",
+    "hono": "^4.13.18",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "^5.0.5",
+    "yaml": "2.9.1"
+  },
+  "overrides": {
+    "minimatch": "11.0.5"
+  }
+}

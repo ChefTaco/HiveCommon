@@ -1,0 +1,11 @@
+HiveCommon (@hivemagnus/hive-common)
+Copyright 2026 ChefTaco and contributors
+
+This product includes software developed by ChefTaco and contributors
+(https://github.com/ChefTaco/HiveCommon).
+
+The Oathweave access-token verification consolidates the verifiers of the Oathweave SDK
+(https://github.com/ChefTaco/Oathweave), Magnus (https://github.com/ChefTaco/magnus) and the
+other Hive:Magnus products, licensed under the Apache License 2.0.
+
+JWT and JWKS handling uses jose (https://github.com/panva/jose), licensed under the MIT License.
