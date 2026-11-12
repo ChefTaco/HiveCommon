@@ -35,6 +35,8 @@ export interface ConformanceVector {
 export interface ConformanceVectors {
   readonly schema: 1;
   readonly issuer: string;
+  /** Native issuer identifiers the verifier under test must be configured to accept. */
+  readonly nativeIssuers?: readonly string[];
   readonly audience: string;
   readonly jwksUrl: string;
   readonly userinfoUrl: string;
@@ -46,6 +48,11 @@ export interface ConformanceVectors {
 
 export interface ConformanceContext {
   readonly issuer: string;
+  /**
+   * Native issuer identifiers (such as `hive-iam`) to configure alongside `issuer`, for service
+   * tokens. Empty when the vectors have none.
+   */
+  readonly nativeIssuers: readonly string[];
   readonly audience: string;
   readonly jwks: JSONWebKeySet;
   readonly jwksUrl: string;
@@ -157,6 +164,7 @@ export async function runOathweaveConformance(verify: ConformanceVerify, options
     if (options.only && !options.only.includes(vector.name)) continue;
     const context: ConformanceContext = {
       issuer: vectors.issuer,
+      nativeIssuers: vectors.nativeIssuers ?? [],
       audience: vectors.audience,
       jwks: vectors.jwks,
       jwksUrl: vectors.jwksUrl,
@@ -193,6 +201,7 @@ export async function runOathweaveConformance(verify: ConformanceVerify, options
 export function hiveCommonConformanceVerify(): ConformanceVerify {
   return (token, context) => createOathweaveVerifier({
     issuer: context.issuer,
+    nativeIssuers: context.nativeIssuers,
     audience: context.audience,
     keys: context.jwks,
     now: () => context.nowMs,
