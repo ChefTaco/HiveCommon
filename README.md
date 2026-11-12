@@ -100,7 +100,8 @@ What it checks, in order: a compact JWT of at most 16 KiB; header `alg` is `RS25
 HMAC key confusion never reach a key); signature against the JWKS (cached for 10 minutes and
 refetched, at most every 30 s, when a token names an unknown `kid`); `iss` is one of the issuers;
 `aud` is exactly the audience; `sub`, `iat`, `exp`, `jti` present; `exp`, `nbf` and `iat` within
-30 s of clock tolerance; `exp - iat` and token age at most 900 s; then the principal rules:
+30 s of clock tolerance; `exp - iat` and token age at most 900 s (`maxLifetimeSec`, one number or
+`{ user, service }`); then the principal rules:
 
 - **User:** `actorType: "USER"`, a `sessionId`, a `clientId` other than the subject, string-array
   `permissions` and (optional) `roles`. With `userinfoUrl`, the session is confirmed online; the
@@ -138,17 +139,48 @@ Two options make the claim rules stricter for products that always required more
   `'client_id'` (RFC 9068) or `'either'` (the default). When both claims are present they must
   agree in every mode.
 
+#### Native issuers
+
+Oathweave signs browser-client tokens with its https issuer, but client-credentials tokens with its
+*native* issuer (its `JWT_ISSUER`, for example `hive-iam`) unless the client's machine policy selects
+the browser issuer. Both are signed by the same key and published in the same JWKS. List the native
+identifiers in `nativeIssuers` to accept those tokens too:
+
+```ts
+const verifier = createOathweaveVerifier({
+  issuer: process.env.OATHWEAVE_ISSUER!,  // still required, still https
+  nativeIssuers: ['hive-iam'],             // exact `iss` values; never accepted unless listed
+  audience: 'hivemem',
+  jwksUrl: process.env.OATHWEAVE_JWKS_URL!, // the one https JWKS serves both issuers
+  userinfoUrl: process.env.OATHWEAVE_USERINFO_URL,
+  accept: 'service',
+});
+```
+
+- Each entry must match `OATHWEAVE_NATIVE_ISSUER_PATTERN` (`^[a-z][a-z0-9-]{0,63}$`), so a URL or
+  any other shape is a startup error. There is no separate JWKS setting: `jwksUrl` (https, or
+  loopback http with `allowInsecureLoopback`) or `keys` verify both kinds of issuer.
+- A native issuer signs service principals only, by default: a user token from a native issuer is
+  refused with `invalid_issuer` before any session check. Suite user tokens come from browser
+  clients, which Oathweave always signs with the https issuer. `nativeIssuerAccept: 'any'` (or
+  `'user'`) changes that for a product that really takes native user tokens.
+- Every other rule (audience, lifetime, principal rules) is unchanged. `principal.issuer` is the
+  native identifier, so identity and service links keyed by `(issuer, clientId)` keep working.
+  `verifier.nativeIssuers` lists them; `verifier.issuers` still lists only the https issuers.
+
 Identity links name the local account `localUserId`. `localId`, the name older deployment configs
 use, is accepted as an alias; an entry that sets both to different values is refused. Parsed links
 always carry `localUserId`.
 
 Endpoints must be `https`. For tests against a loopback server, pass `allowInsecureLoopback: true`.
+Native issuer identifiers are names, not endpoints, and are never fetched.
 
 ### Conformance vectors
 
-`test-vectors/oathweave/vectors.json` ships a test JWKS and twelve pre-signed tokens (valid user,
+`test-vectors/oathweave/vectors.json` ships a test JWKS and fifteen pre-signed tokens (valid user,
 valid service, expired, not yet valid, wrong audience, wrong issuer, bad signature, unknown `kid`,
-`alg: none`, HS256 key confusion, overlong lifetime, user without session), evaluated at a fixed
+`alg: none`, HS256 key confusion, overlong lifetime, user without session, valid native-issuer
+service, unconfigured native issuer, overlong native-issuer service token), evaluated at a fixed
 clock so they never expire. Run them against your product's verifier:
 
 ```ts
@@ -157,13 +189,15 @@ import { runOathweaveConformance } from '@hivemagnus/hive-common/oathweave/confo
 it('meets the Oathweave conformance vectors', async () => {
   await runOathweaveConformance((token, ctx) => createProductVerifier({
     issuer: ctx.issuer, audience: ctx.audience, jwksUrl: ctx.jwksUrl, userinfoUrl: ctx.userinfoUrl,
+    nativeIssuers: ctx.nativeIssuers, // native issuers the vectors use, for service tokens
     fetch: ctx.fetch,          // serves the vectors' JWKS and userinfo
     now: () => ctx.nowMs,      // the fixed clock
   })(token));
 });
 ```
 
-It throws a readable error listing failed vectors. A refusal passes when the verifier rejects
+A verifier that does not accept native issuers fails `valid-native-service`; pass `only` to run
+the other vectors until it does. It throws a readable error listing failed vectors. A refusal passes when the verifier rejects
 (and any numeric `status` on the error matches); `strictReasons: true` also compares `reason`.
 
 ### errors
@@ -406,6 +440,8 @@ existing behaviour with these settings instead of wrapping the shared helpers:
 | `sessionCacheTtlMs: 0` (verifier) | 10 000 | an online session check on every request, so sign-out is immediate |
 | `requireRoles: true` (verifier) | `false` | refusing tokens without a `roles` array |
 | `clientIdClaim: 'clientId'` (verifier) | `'either'` | requiring the Oathweave `clientId` claim; RFC 9068 `client_id` alone is refused |
+| `nativeIssuers: ['hive-iam']` (verifier) | none | accepting client-credentials tokens signed with Oathweave's native issuer, which a local jose check used to handle |
+| `maxLifetimeSec: { user, service }` (verifier) | 900 for both | a different limit per principal kind, for example `{ user: 900, service: 300 }` |
 | `trustInboundRequestId: false` with `trustInboundTrace: true` (context, `/hono`, `/node-http`) | both `trustInbound` | generating every request ID on an internet-facing service while continuing callers' traces |
 | `liveBody` (health, `/hono`, `/node-http`) | the standard body | a published `/health/live` body such as `{ status: 'ok' }` |
 | `localId` in identity links | `localUserId` | existing link configs, unchanged |
@@ -422,6 +458,25 @@ registerHealthRoutes(app, { service: 'chattermost', liveBody: { status: 'ok' } }
 
 Every refusal, including 503 `auth_unavailable`, is still an `OathweaveError`; a product that
 answers 401 for all of them maps the error in its own handler.
+
+Service tokens from a native issuer. Products that kept a local jose verifier for Oathweave's
+native issuer replace it with a second shared verifier on the same key source, so one JWKS cache
+serves both:
+
+```ts
+const keys = createRemoteJWKSet(new URL(jwksUrl)); // or let each verifier fetch jwksUrl itself
+const users = createOathweaveVerifier({ issuer, audience: 'hivemem', keys, userinfoUrl, /* user settings */ });
+const services = createOathweaveVerifier({
+  issuer,                                   // https; browser-issued machine clients use it
+  nativeIssuers: ['hive-iam'],              // Oathweave's JWT_ISSUER, from configuration
+  audience: 'hivemem', keys, accept: 'service',
+  clientIdClaim: 'clientId',                // Oathweave service tokens always carry clientId
+});
+```
+
+The fifteen-minute limit applies to service tokens as before (`maxLifetimeSec` sets it per kind).
+Native identifiers are exact: configure the value Oathweave's `JWT_ISSUER` is set to, and keep the
+service links that grant access keyed by that issuer.
 
 ## Development
 
