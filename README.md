@@ -104,7 +104,8 @@ refetched, at most every 30 s, when a token names an unknown `kid`); `iss` is on
 
 - **User:** `actorType: "USER"`, a `sessionId`, a `clientId` other than the subject, string-array
   `permissions` and (optional) `roles`. With `userinfoUrl`, the session is confirmed online; the
-  answer is shared for 10 s from when the request started (failures for 2 s).
+  answer is shared for 10 s from when the request started (failures for 2 s), or not at all with
+  `sessionCacheTtlMs: 0`.
 - **Service:** `clientId` (or `client_id`) equals `sub`, `actorType: "SERVICE_ACCOUNT"`,
   `token_type: "access"`, no session.
 
@@ -128,6 +129,18 @@ const watch = watchStreamAuthorization({
   onEnd: () => stream.close(),           // sign-out takes effect within about 15 s
 });
 ```
+
+Two options make the claim rules stricter for products that always required more:
+
+- `requireRoles: true` refuses a token without a `roles` array. The default (`false`) treats an
+  absent `roles` claim as no roles. A `roles` claim that is not a string array is always refused.
+- `clientIdClaim` chooses which claim names supply the client ID: `'clientId'` (Oathweave),
+  `'client_id'` (RFC 9068) or `'either'` (the default). When both claims are present they must
+  agree in every mode.
+
+Identity links name the local account `localUserId`. `localId`, the name older deployment configs
+use, is accepted as an alias; an entry that sets both to different values is refused. Parsed links
+always carry `localUserId`.
 
 Endpoints must be `https`. For tests against a loopback server, pass `allowInsecureLoopback: true`.
 
@@ -205,6 +218,16 @@ A check is down when it throws, returns `false` or `{ ok: false }`, or exceeds i
 `signal` aborts). Error text is hidden unless `exposeErrors: true`. Serve legacy aliases only
 while old clients still call them.
 
+A product that has published its own liveness body can keep it with `liveBody`: an object served
+as is, or a function that receives the standard body on every request. Status, headers and
+readiness are unchanged, and liveness still never runs checks. `liveness()`, `createHealth()`,
+`registerHealthRoutes()` and `hiveHandler({ health })` all take it.
+
+```ts
+createHealth({ service: 'studio', liveBody: { status: 'ok' } });
+createHealth({ service: 'hive-skills', liveBody: standard => ({ status: 'ok', service: standard.service, protocol: 1 }) });
+```
+
 ### context
 
 ```ts
@@ -220,6 +243,12 @@ const key = readIdempotencyKey(req.headers);                // string | undefine
 Also `parseTraceparent()`, `formatTraceparent()`, `generateTraceparent()`, `childTraceparent()`,
 `readRequestId()`, `requireIdempotencyKey()` (428 when missing). On an edge service exposed to the
 internet, pass `trustInbound: false` so callers cannot choose IDs.
+
+`trustInboundRequestId` and `trustInboundTrace` decide the request ID and the trace separately; each
+defaults to `trustInbound` (itself `true`). An internet-facing service that should still join its
+callers' traces passes `{ trustInboundRequestId: false, trustInboundTrace: true }`. The `/hono`
+`requestContext()` middleware and the `/node-http` `hiveHandler()` and `requestContextFor()` take
+the same options.
 
 ### registry
 
@@ -365,6 +394,34 @@ Behaviour that changes when a product adopts the shared verifier:
   exposed `authenticatedAt` in milliseconds).
 - Duplicate identity links fail at startup by default (`duplicates: 'ignore'` keeps the old
   Magnus behaviour of granting nothing to that identity).
+
+## Choosing settings for an existing product
+
+The defaults suit a new service. A product moving from its own code to HiveCommon can keep its
+existing behaviour with these settings instead of wrapping the shared helpers:
+
+| Setting | Default | Set it to keep |
+| --- | --- | --- |
+| `clockToleranceSec: 0` (verifier) | 30 | no clock skew allowance on `exp`, `nbf` and `iat` |
+| `sessionCacheTtlMs: 0` (verifier) | 10 000 | an online session check on every request, so sign-out is immediate |
+| `requireRoles: true` (verifier) | `false` | refusing tokens without a `roles` array |
+| `clientIdClaim: 'clientId'` (verifier) | `'either'` | requiring the Oathweave `clientId` claim; RFC 9068 `client_id` alone is refused |
+| `trustInboundRequestId: false` with `trustInboundTrace: true` (context, `/hono`, `/node-http`) | both `trustInbound` | generating every request ID on an internet-facing service while continuing callers' traces |
+| `liveBody` (health, `/hono`, `/node-http`) | the standard body | a published `/health/live` body such as `{ status: 'ok' }` |
+| `localId` in identity links | `localUserId` | existing link configs, unchanged |
+| `duplicates: 'ignore'` (identity links) | `'reject'` | granting nothing to a duplicated identity instead of failing at startup |
+
+```ts
+const verifier = createOathweaveVerifier({
+  issuer, audience: 'chattermost', jwksUrl, userinfoUrl,
+  clockToleranceSec: 0, sessionCacheTtlMs: 0, requireRoles: true, clientIdClaim: 'clientId',
+});
+app.use(requestContext({ trustInboundRequestId: false, trustInboundTrace: true }));
+registerHealthRoutes(app, { service: 'chattermost', liveBody: { status: 'ok' } });
+```
+
+Every refusal, including 503 `auth_unavailable`, is still an `OathweaveError`; a product that
+answers 401 for all of them maps the error in its own handler.
 
 ## Development
 

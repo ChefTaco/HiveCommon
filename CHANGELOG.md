@@ -6,6 +6,29 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-12
+
+Options that let a product keep its existing behaviour without wrapping the shared helpers. Every
+change is additive: the defaults are those of 0.1.0.
+
+### Added
+
+- `/oathweave`: `requireRoles` (default `false`) refuses a token without a `roles` array.
+- `/oathweave`: `clientIdClaim: 'clientId' | 'client_id' | 'either'` (default `'either'`) chooses
+  which claim names supply the client ID. Both claims present must still agree. `clientIdOf()`,
+  `principalKindOf()` and `extractRoles()` take matching optional arguments, and `ClaimPolicy`
+  matching optional fields. `CLIENT_ID_CLAIMS` and the `ClientIdClaim` type are exported.
+- `/oathweave`: `parseIdentityLinks()` accepts `localId` as an alias of `localUserId`. An entry
+  that sets both to different values is refused. Parsed links always use `localUserId`.
+- `/context`: `trustInboundRequestId` and `trustInboundTrace` trust the inbound request ID and the
+  inbound `traceparent`/`tracestate` separately. Each defaults to `trustInbound`. The `/hono` and
+  `/node-http` adapters take them too.
+- `/health`: `liveBody` replaces the `/health/live` body with a product's own, as an object or a
+  function of the standard body. `liveness()`, `createHealth()`, `Health`, `registerHealthRoutes()`
+  and `hiveHandler({ health })` accept it; `HealthOptions` and `Health` take an optional type
+  parameter for the body, defaulting to `LiveBody`.
+- README: "Choosing settings for an existing product".
+
 ## [0.1.0] - 2026-11-12
 
 First release: the shared server kit that replaces each product's own copy of the Oathweave
@@ -37,5 +60,6 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ChefTaco/HiveCommon/releases/tag/v0.1.0
