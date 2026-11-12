@@ -1,0 +1,174 @@
+{
+  "schema": 1,
+  "description": "Oathweave access-token conformance vectors. Synthetic: the signing keys were discarded after generation.",
+  "issuer": "https://oathweave.example.test",
+  "audience": "conformance",
+  "jwksUrl": "https://oathweave.example.test/jwks",
+  "userinfoUrl": "https://oathweave.example.test/userinfo",
+  "now": "2026-01-01T00:00:00.000Z",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "RSA",
+        "n": "golRKNCwa4EHgHIg8TdQPKbdQ2ZcEyA86q-Nnhlpv77c8ivnED12nAcQC29yuR7aUkLNH1FJHvbChiXndB_PqDk_AtF_fmm0XPhdKthO6GPZOjLEX5LeWzFilQ4EmgieFIOAa-4LvWZfuvqsX2jXkbABiDFnJKwQ2hfegLTGkmqRQfEfBIZZcTlGI3tVjLV2B8Fh1cutNyUpCAtTFMUBUleioFtA9BzuIl3pBJ4Q3aBMxDvkAcaV7o9FpSz5Z1bfXUaNxi_k3jfdZh8OYStAQD0SPNWjt_Wannm9N_cSVl34jMmnFBUtyiAOHf8jVZeYtcVF75RtUJRg-QopglyIow",
+        "e": "AQAB",
+        "kid": "conformance-1",
+        "alg": "RS256",
+        "use": "sig"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "name": "valid-user",
+      "description": "A user access token with a session, signed by the trusted key.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0LTE3NjcyMjU1NDAtMTc2NzIyNjQ0MCIsImlhdCI6MTc2NzIyNTU0MCwiZXhwIjoxNzY3MjI2NDQwfQ.H_M25DpT8q8xWyVFydzNrBQd6m1j1M_ziDq8yiLem2jgDoG2eetf_gGl0eUSwP-RuRlcykPvHGou1XZ3MIbbzaOP4AqxOr4aTl3HaxpXbYudYMG89ty5fcJKsFnT15zy61VjV0ZNkj734DrXDo04XbFnLuhi300ojsJpYJkWi6v-o3B-_DFVygHk_5ZNHA6hboIOCgv8ZO-kOWcHrw8Zr_VpwSmKxpj-5B8uLxXsEDb_WqGdHyXAFFt_dDjQb1dw9ssUtFhxRLE0kI2LXq6mjy_P76Z7bk_S1sSFGvMAWL_mh8QNzHspJ3CBhJmJ93JimimZu7EUpJb1vH8wIvmSVg",
+      "expect": {
+        "outcome": "accept",
+        "kind": "user",
+        "subject": "conformance-user-subject",
+        "clientId": "hivexui",
+        "roles": [
+          "VIEWER"
+        ],
+        "permissions": [
+          "conformance:read"
+        ],
+        "scopes": [
+          "openid",
+          "conformance:read"
+        ]
+      }
+    },
+    {
+      "name": "valid-service",
+      "description": "A client-credentials token whose client ID equals its subject.",
+      "principal": "service",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJTRVJWSUNFX0FDQ09VTlQiLCJjbGllbnRJZCI6ImNvbmZvcm1hbmNlLXNlcnZpY2UiLCJ0b2tlbl90eXBlIjoiYWNjZXNzIiwicm9sZXMiOltdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTp3cml0ZSJdLCJzY29wZSI6ImNvbmZvcm1hbmNlOndyaXRlIiwiaXNzIjoiaHR0cHM6Ly9vYXRod2VhdmUuZXhhbXBsZS50ZXN0IiwiYXVkIjoiY29uZm9ybWFuY2UiLCJzdWIiOiJjb25mb3JtYW5jZS1zZXJ2aWNlIiwianRpIjoiY29uZm9ybWFuY2Utc2VydmljZS0xNzY3MjI1NTcwLTE3NjcyMjU4NzAiLCJpYXQiOjE3NjcyMjU1NzAsImV4cCI6MTc2NzIyNTg3MH0.GX3VfFVnjLp2mPZQn3nI8FkLUT52ZAZoV5QWfSpjGqycR7FRgvaK3ba0RUimrTKrK_2-DZAQOLKJ-TGPjsJDJnyCNbUY-0V63QkSSZ15nKyDWpE9M8ubjjNM5cblP4GpyUog6rdhZryShHp9Q6eyjFMOUDlr2eVcxIFF3kuIMn_rfrO8rAqyk8jHu5Qpld0lls3hQIxEIf4c3WZOviVFkUEdqYmhNwwDkCM7uVSaFKv_Sh48KYWIJVPQH46FjiGOXiDxfpCwEn8ox2ZUICL0YbM3k2XB7FI3V32Ao6D9brVQ5GzDINI6yXsZJ4ylbaVHbEbXgvtnHqojkrzfAZ7FXg",
+      "expect": {
+        "outcome": "accept",
+        "kind": "service",
+        "subject": "conformance-service",
+        "clientId": "conformance-service",
+        "roles": [],
+        "permissions": [
+          "conformance:write"
+        ],
+        "scopes": [
+          "conformance:write"
+        ]
+      }
+    },
+    {
+      "name": "expired",
+      "description": "Expired fifteen minutes before the evaluation time.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0LTE3NjcyMjM4MDAtMTc2NzIyNDcwMCIsImlhdCI6MTc2NzIyMzgwMCwiZXhwIjoxNzY3MjI0NzAwfQ.J3EHtT1KeCqs6XoHbGMC6cenCD8VW8YPHNKR2ipOlu7z1g5zNsF5M1MINm3ATEplsbNs8cC1Kaw4hbXwn0VfvRqv8jSfOhmG3kW70I9X1GYZjLPIzcvR_cQZ271_KcfcSZujnoHu5EuZBblyNB8MAEQhhfjV_KTfmtz1cDoR2ZpULYWzuqdwyeyI-9Aw_kFk_ueg-E45b1dhkx9mGUSO2cOUa43DZzVtzHqkhwHfxeSTKTxYk3oICaY_329q25cUh4w2ss7ZQQgYIV1fhY5COBQYQ61TuePgHhiGTuBuUkWIfJ0Uw2i3ZzmqrBkpMYURctE1cZ9gLAXUMu0YiZN7_g",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "expired"
+      }
+    },
+    {
+      "name": "not-yet-valid",
+      "description": "nbf is ten minutes after the evaluation time, beyond any clock tolerance.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0LTE3NjcyMjU1NDAtMTc2NzIyNjQ0MCIsImlhdCI6MTc2NzIyNTU0MCwiZXhwIjoxNzY3MjI2NDQwLCJuYmYiOjE3NjcyMjYyMDB9.IrT2Yb6p46ok6yxC33vXiQSz1YlkYr9v4tOuYyOXjaP6VLDojFzp9ePUVSpRJ3KGseYvx5wQqJEC89EVebuBGbPX4prXSFVeiJsUk9ugIX272l3_fPKhvoo8-U0hIOefqy-yE4wtr99pC3o5pVTNkRVBeLf3Dj9qK_qJuUIpkTsyq4lXMQCr5nODmrND5NHFd1RvpSgRIbmUyuS02fWW67v_nrfacRnawKCYkheBoa9Zdq-9yHiW_aeclYhXUDFE35VPTtFIQH9sODWDwGaeHN6PxsqAuaNgKK3S4Oi9W9hN6N9hKf-XctefpSMDmR8qz3NW3ICcDmEy64Zv-kpltw",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "not_yet_valid"
+      }
+    },
+    {
+      "name": "wrong-audience",
+      "description": "Issued for another product.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImFub3RoZXItcHJvZHVjdCIsInN1YiI6ImNvbmZvcm1hbmNlLXVzZXItc3ViamVjdCIsImp0aSI6ImNvbmZvcm1hbmNlLXVzZXItc3ViamVjdC0xNzY3MjI1NTQwLTE3NjcyMjY0NDAiLCJpYXQiOjE3NjcyMjU1NDAsImV4cCI6MTc2NzIyNjQ0MH0.eeXV-yXckuctyJcs7zMEu--CzOJ5jUBtGIaqZQmF8Q3qAZM9hibaQJB3Ew0gLVTQD1PIFOUM5JIv0OwUJWW7FuaEijhynTpBK037yTe-y5Hvo1btDlvGgQ7QdotS39WqLPdIorI2IndzPSq0j9CiiG9i7TRYaPUaep0dWgM4uBu-p7Tdg4n3hMFeXdaGtd9AzsMoMh-4kJx0W7jKF7YiHEibkCu1-hXmlNdylDiJ-OdaYmhPJu1HDoBs9D0KcLlJyqsvCV4E_3pK3eGLyGwRQ54v5PR5J-kHcXAXoIe-iZlYdPpfX5DxRtOAklHeRyNmNy8csGAcGFgJP7NkQ_VQnw",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "invalid_audience"
+      }
+    },
+    {
+      "name": "wrong-issuer",
+      "description": "Signed by the trusted key but naming another issuer.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vaW1wb3N0b3IuZXhhbXBsZS50ZXN0IiwiYXVkIjoiY29uZm9ybWFuY2UiLCJzdWIiOiJjb25mb3JtYW5jZS11c2VyLXN1YmplY3QiLCJqdGkiOiJjb25mb3JtYW5jZS11c2VyLXN1YmplY3QtMTc2NzIyNTU0MC0xNzY3MjI2NDQwIiwiaWF0IjoxNzY3MjI1NTQwLCJleHAiOjE3NjcyMjY0NDB9.ZpN1PfxxUKc3dszqk_eciJKkvvwirMRF9SfKKOHH8_bLeq8mS6XpmZDPsq70u3mI0OSw1Cuzmfbr2U78Bi6Kt49VBHVo5M5K3LxmCNJkLhUddB1bpxFP1fBQbBDrqUzLntaDL30HmEWwdLagVhsw-MviWBk7C_viMh1WdgXMv_0-XEYsA76juNjrz4PU5mlpPW8zS9hIuwl7EYNlZa8kB8ok24yfPksZtE1hg8YUVrMi2i2RkgnKG-CW_WBh59sVBlouY4csr8IMHn3zV3kwdHCBAIKeiNh-z3P3asarMRPUDFUwL636ihvXyZRony6jJUjCOegYcvB9dSH6ZEQlMQ",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "invalid_issuer"
+      }
+    },
+    {
+      "name": "bad-signature",
+      "description": "Names the trusted key ID but is signed by another key.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0LTE3NjcyMjU1NDAtMTc2NzIyNjQ0MCIsImlhdCI6MTc2NzIyNTU0MCwiZXhwIjoxNzY3MjI2NDQwfQ.N6ySuCzMIpFUbnd-Or30sjD_E98oAQFEJlel7thmoyEWhFuiIVmwyU24bKs148r8Ko9sPQ7HKPP7lTO1G0q7IKGEjn5Ds4LkE97T0VAnViYp_5PHZ7BgvYKtFoawJZc5RQKFlXwkSUb50BjFJ_iotnroPsBYzfy_oDVcVoctizQSvCydknDzNBI-R7WTJHdK73XlUyjwJiIxfsgDdNVnm4VagQfJraQcVJGeCIrWzFz_YQZ0mWQOwMLRlwaaWBOCJ_ClaU9qTU0Vhy4AMKW2_0p61u8rN_mtA_qWSEiZYMIVYgDxYvgTO4OwVuUi_un-tA_2k8v_GikXIuyOK6ohDg",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "invalid_signature"
+      }
+    },
+    {
+      "name": "unknown-kid",
+      "description": "Signed by a key the JWKS does not contain.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLXVua25vd24iLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0LTE3NjcyMjU1NDAtMTc2NzIyNjQ0MCIsImlhdCI6MTc2NzIyNTU0MCwiZXhwIjoxNzY3MjI2NDQwfQ.PRXTFRE263S0jKbuv9l_As6iEEPFib-_d-mXNeQ5dffjbCCt7JCzT8YZyxzS_IgpNwTB1Te6oDa69TcrgGjTnh7nCUye0_tN64ZoEANPCNgS16LHWaNemW88r-Nzi-2dBtWaSHMpHMFr43B5JcIwsR9jCksguIk8oclt3i1yNIYB1dR_I5YbsWnwy26lNYgo0rlgIbkpkL35VZwejYfuHe3YYozJNbLTvwRUrAbzruNRC_ZoeRnmwAyMaBLx4SVmZSJnxzcuTiy7saArv0vedV34pst4-a9DVvwpeZy_EKHHVFlTnzLVdGVr2ZDly3Fc5uHWDApsfq_LVxuq0vE-DA",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "unknown_key"
+      }
+    },
+    {
+      "name": "alg-none",
+      "description": "An unsigned token (alg none).",
+      "principal": "user",
+      "token": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiZm9yZ2VkIiwiaWF0IjoxNzY3MjI1NTQwLCJleHAiOjE3NjcyMjY0NDB9.",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "algorithm_not_allowed"
+      }
+    },
+    {
+      "name": "hs256-confusion",
+      "description": "HS256, keyed with the trusted public key, to exploit key-type confusion.",
+      "principal": "user",
+      "token": "eyJhbGciOiJIUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiZm9yZ2VkIiwiaWF0IjoxNzY3MjI1NTQwLCJleHAiOjE3NjcyMjY0NDB9.X3tuRAouszRyCO7IV3TpgE-80FuN1XfsH3bfYRp9r6s",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "algorithm_not_allowed"
+      }
+    },
+    {
+      "name": "lifetime-too-long",
+      "description": "A one-hour token; Oathweave access tokens live at most fifteen minutes.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwic2Vzc2lvbklkIjoiY29uZm9ybWFuY2Utc2Vzc2lvbiIsInVzZXJuYW1lIjoiY29uZm9ybWFuY2UtdXNlciIsInJvbGVzIjpbIlZJRVdFUiJdLCJwZXJtaXNzaW9ucyI6WyJjb25mb3JtYW5jZTpyZWFkIl0sInNjb3BlIjoib3BlbmlkIGNvbmZvcm1hbmNlOnJlYWQiLCJhdXRoX3RpbWUiOjE3NjcyMjU0ODAsImlzcyI6Imh0dHBzOi8vb2F0aHdlYXZlLmV4YW1wbGUudGVzdCIsImF1ZCI6ImNvbmZvcm1hbmNlIiwic3ViIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0IiwianRpIjoiY29uZm9ybWFuY2UtdXNlci1zdWJqZWN0LTE3NjcyMjU1NDAtMTc2NzIyOTE0MCIsImlhdCI6MTc2NzIyNTU0MCwiZXhwIjoxNzY3MjI5MTQwfQ.Txf8bZffFR4740gNpE5gb7wNAoQLwC6lrDSN57-ZeqpbdzYykF3-FtkBbRBHsGvOnUysoK7rCkatUki4Yb3YASncBHFYrpQJ10j6BpAZMFevE4GM_b021cWC5vMVLur9foh0j5F4KcvuBPeaFWvGw_NlhVA8oyVV4xkm2MPcUT5e4G8ZvKI2trBDR1RZSgJqv8WgqXUW7_hTCjXs1eazV_rqCJ5WeEaLmynQASVqSwaOIjiIZQC_UWp_0RLkLcEoTFkhKCfYZGrtuCA2yGqPbtoPK_mzzedWv-ww1dP39J4CTA2K4v5w-7kcPNrRO8SvSrVo42FVkD-FwaI-Ybkz5g",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "invalid_lifetime"
+      }
+    },
+    {
+      "name": "user-without-session",
+      "description": "A USER token with no session cannot be revoked and is refused.",
+      "principal": "user",
+      "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImNvbmZvcm1hbmNlLTEiLCJ0eXAiOiJKV1QifQ.eyJhY3RvclR5cGUiOiJVU0VSIiwiY2xpZW50SWQiOiJoaXZleHVpIiwidXNlcm5hbWUiOiJjb25mb3JtYW5jZS11c2VyIiwicm9sZXMiOlsiVklFV0VSIl0sInBlcm1pc3Npb25zIjpbImNvbmZvcm1hbmNlOnJlYWQiXSwic2NvcGUiOiJvcGVuaWQgY29uZm9ybWFuY2U6cmVhZCIsImF1dGhfdGltZSI6MTc2NzIyNTQ4MCwiaXNzIjoiaHR0cHM6Ly9vYXRod2VhdmUuZXhhbXBsZS50ZXN0IiwiYXVkIjoiY29uZm9ybWFuY2UiLCJzdWIiOiJjb25mb3JtYW5jZS11c2VyLXN1YmplY3QiLCJqdGkiOiJjb25mb3JtYW5jZS11c2VyLXN1YmplY3QtMTc2NzIyNTU0MC0xNzY3MjI2NDQwIiwiaWF0IjoxNzY3MjI1NTQwLCJleHAiOjE3NjcyMjY0NDB9.Gy_tAGnksWVv8bf_k4hRoA1bSr_3r6Q6wdEa-q-4ZQAGX5L10O-o_uZHhW-DFjS7Z9LDWNarrHH04MW1kkC2DUX5hylt-JX72vHJXHDJH4XedJC8yZ5y2yDz2qgss68iSx-4y4cmTddI1Vzra3lJ7F_W9BG9znvGP-u8IfxXxu1iIBjt7oNnPbYw2xQOETFst7_exu0XbfY8t1F86x5N2a5iyOSO4_ocvj6wwXwGSKBlnLZ9he12CiRraIpOrUkJlzW3Sia_KCsBBwrrBIHDBm6WJRl8SlfbLScQJlJxA5n6riGtjPqmN44d0H2z_rj8RsyHB15ocNMUsUGapiIUHA",
+      "expect": {
+        "outcome": "reject",
+        "status": 401,
+        "reason": "invalid_claims"
+      }
+    }
+  ]
+}
