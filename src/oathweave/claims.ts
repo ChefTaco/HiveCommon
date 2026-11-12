@@ -45,6 +45,9 @@ export interface OathweaveServicePrincipal extends PrincipalBase {
 
 export type OathweavePrincipal = OathweaveUserPrincipal | OathweaveServicePrincipal;
 
+/** Mirrors `OATHWEAVE_MAX_LIFETIME_SEC`, which lives in the verifier module. */
+const MAX_LIFETIME_SEC = 900;
+
 function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === 'string');
 }
@@ -100,10 +103,19 @@ function validAuthTime(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+/** A lifetime limit in seconds for each principal kind. */
+export interface OathweaveLifetimeLimits {
+  readonly user?: number;
+  readonly service?: number;
+}
+
 export interface ClaimPolicy {
   readonly accept: AcceptPrincipal;
-  /** Largest allowed `exp - iat`, in seconds. */
-  readonly maxLifetimeSec: number;
+  /**
+   * Largest allowed `exp - iat`, in seconds: one limit for every token, or one per principal
+   * kind. A kind missing from the object gets `OATHWEAVE_MAX_LIFETIME_SEC` (900).
+   */
+  readonly maxLifetimeSec: number | OathweaveLifetimeLimits;
   /** Refuse a token without a `roles` claim. Defaults to false: an absent claim is no roles. */
   readonly requireRoles?: boolean;
   /** Which claim names supply the client ID. Defaults to `either`. */
@@ -120,17 +132,18 @@ export interface ClaimPolicy {
  */
 export function principalFromClaims(payload: JWTPayload, policy: ClaimPolicy): OathweavePrincipal {
   const { iat, exp, sub, jti, iss } = payload;
-  if (typeof iat !== 'number' || typeof exp !== 'number' || exp <= iat || exp - iat > policy.maxLifetimeSec) {
+  const clientIdClaim = policy.clientIdClaim ?? 'either';
+  const kind = principalKindOf(payload, clientIdClaim);
+  const maxLifetimeSec = typeof policy.maxLifetimeSec === 'number' ? policy.maxLifetimeSec : policy.maxLifetimeSec[kind] ?? MAX_LIFETIME_SEC;
+  if (typeof iat !== 'number' || typeof exp !== 'number' || exp <= iat || exp - iat > maxLifetimeSec) {
     throw new OathweaveError('invalid_lifetime');
   }
   if (!nonEmpty(sub) || !nonEmpty(jti) || !nonEmpty(iss)) throw new OathweaveError('invalid_claims');
   const permissions = payload['permissions'];
-  const clientIdClaim = policy.clientIdClaim ?? 'either';
   const roles = extractRoles(payload, policy.requireRoles ?? false);
   const clientId = clientIdOf(payload, clientIdClaim);
   if (!stringArray(permissions) || roles === undefined || clientId === undefined) throw new OathweaveError('invalid_claims');
 
-  const kind = principalKindOf(payload, clientIdClaim);
   if (policy.accept !== 'any' && policy.accept !== kind) throw new OathweaveError('wrong_principal_kind', { details: { kind } });
 
   const base = {

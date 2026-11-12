@@ -45,6 +45,10 @@ describe('configuration', () => {
     expect(() => verifier({ audience: '' })).toThrow(/audience/);
     expect(() => verifier({ clockToleranceSec: -1 })).toThrow(/clockTolerance/);
     expect(() => verifier({ maxLifetimeSec: 0 })).toThrow(/maxLifetime/);
+    expect(() => verifier({ maxLifetimeSec: { service: 0 } })).toThrow(/maxLifetime/);
+    expect(() => verifier({ maxLifetimeSec: { user: 86_401 } })).toThrow(/maxLifetime/);
+    expect(() => verifier({ maxLifetimeSec: { user: '900' as never } })).toThrow(/maxLifetime/);
+    expect(() => verifier({ maxLifetimeSec: null as never })).not.toThrow();
     expect(() => verifier({ requireRoles: 'yes' as never })).toThrow(/requireRoles/);
     expect(() => verifier({ clientIdClaim: 'client' as never })).toThrow(/clientIdClaim/);
   });
@@ -225,6 +229,74 @@ describe('service tokens', () => {
   });
 });
 
+describe('native issuers', () => {
+  const NATIVE = 'hive-iam';
+  const native = (options: Partial<OathweaveVerifierOptions> = {}) => verifier({ nativeIssuers: [NATIVE], ...options });
+
+  it('validates native issuer identifiers', () => {
+    for (const bad of ['', 'Hive-IAM', '1hive', '-hive', 'hive_iam', 'hive iam', 'https://oathweave.example.test', 'a'.repeat(65), 42]) {
+      expect(() => verifier({ nativeIssuers: [bad as string] })).toThrow(/nativeIssuers entries/);
+    }
+    expect(() => verifier({ nativeIssuers: 'hive-iam' as never })).toThrow(/must be an array/);
+    expect(() => verifier({ nativeIssuers: ['a'.repeat(64), 'h', 'hive-iam-2'] })).not.toThrow();
+    expect(() => native({ nativeIssuerAccept: 'robot' as never })).toThrow(/nativeIssuerAccept/);
+  });
+
+  it('exposes native issuers apart from https issuers, de-duplicated', () => {
+    const v = verifier({ nativeIssuers: [NATIVE, NATIVE] });
+    expect(v.issuers).toEqual([ISSUER]);
+    expect(v.nativeIssuers).toEqual([NATIVE]);
+    expect(verifier().nativeIssuers).toEqual([]);
+  });
+
+  it('accepts a service token from a configured native issuer, with the same keys', async () => {
+    const principal = await native().verifyService(await mint(keys, serviceClaims(), { iss: NATIVE }));
+    expect(principal).toMatchObject({ kind: 'service', issuer: NATIVE, clientId: 'ardent-studio' });
+  });
+
+  it('verifies native tokens against the remote JWKS too', async () => {
+    const stub = stubFetch({ [JWKS_URL]: () => Response.json(keys.jwks) });
+    const v = remoteVerifier({ fetch: stub.fetch, nativeIssuers: [NATIVE] });
+    expect((await v.verifyService(await mint(keys, serviceClaims(), { iss: NATIVE }))).issuer).toBe(NATIVE);
+    expect((await v.verifyService(await mint(keys, serviceClaims()))).issuer).toBe(ISSUER);
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it('never accepts a native issuer unless configured', async () => {
+    const token = await mint(keys, serviceClaims(), { iss: NATIVE });
+    expect(await reason(verifier().verifyService(token))).toBe('invalid_issuer');
+    expect(await reason(verifier({ nativeIssuers: [] }).verifyService(token))).toBe('invalid_issuer');
+    expect(await reason(verifier({ nativeIssuers: ['other-iam'] }).verifyService(token))).toBe('invalid_issuer');
+  });
+
+  it('refuses user tokens from a native issuer by default, before any session check', async () => {
+    const stub = stubFetch({ [USERINFO_URL]: () => Response.json({ sub: 'user-subject' }) });
+    const token = await mint(keys, userClaims(), { iss: NATIVE });
+    expect(await reason(native({ userinfoUrl: USERINFO_URL, fetch: stub.fetch }).verifyUser(token))).toBe('invalid_issuer');
+    expect(await reason(native({ accept: 'any' }).verify(token))).toBe('invalid_issuer');
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it('accepts user tokens from a native issuer only when nativeIssuerAccept allows them', async () => {
+    const userToken = await mint(keys, userClaims(), { iss: NATIVE });
+    const serviceToken = await mint(keys, serviceClaims(), { iss: NATIVE });
+    expect((await native({ nativeIssuerAccept: 'any' }).verifyUser(userToken)).issuer).toBe(NATIVE);
+    expect((await native({ nativeIssuerAccept: 'user' }).verifyUser(userToken)).issuer).toBe(NATIVE);
+    expect(await reason(native({ nativeIssuerAccept: 'user', accept: 'any' }).verify(serviceToken))).toBe('invalid_issuer');
+  });
+
+  it('keeps https-issuer tokens working alongside native issuers', async () => {
+    const v = native({ accept: 'any' });
+    expect((await v.verify(await mint(keys, userClaims()))).issuer).toBe(ISSUER);
+    expect((await v.verify(await mint(keys, serviceClaims()))).issuer).toBe(ISSUER);
+  });
+
+  it('applies the lifetime limit to native tokens', async () => {
+    const token = await mint(keys, serviceClaims(), { iss: NATIVE, iat: NOW_SEC - 10, exp: NOW_SEC + 1000 });
+    expect(await reason(native().verifyService(token))).toBe('invalid_lifetime');
+  });
+});
+
 describe('signature, algorithm and keys', () => {
   it('refuses a token signed by another key', async () => {
     expect(await reason(verifier().verify(await mint(keys, userClaims(), { key: keys.otherPrivateKey })))).toBe('invalid_signature');
@@ -329,6 +401,25 @@ describe('time and audience', () => {
     const token = await mint(keys, userClaims(), { iat: NOW_SEC - 10, exp: NOW_SEC + 3000 });
     await expect(verifier({ maxLifetimeSec: 3600 }).verify(token)).resolves.toBeDefined();
   });
+
+  it('honours a lifetime limit per principal kind', async () => {
+    const v = verifier({ accept: 'any', maxLifetimeSec: { user: 3600, service: 300 } });
+    const longUser = await mint(keys, userClaims(), { iat: NOW_SEC - 10, exp: NOW_SEC + 3000 });
+    const longService = await mint(keys, serviceClaims(), { iat: NOW_SEC - 10, exp: NOW_SEC + 590 });
+    const shortService = await mint(keys, serviceClaims(), { iat: NOW_SEC - 10, exp: NOW_SEC + 290 });
+    expect((await v.verify(longUser)).kind).toBe('user');
+    expect(await reason(v.verify(longService))).toBe('invalid_lifetime');
+    expect((await v.verify(shortService)).kind).toBe('service');
+  });
+
+  it('defaults a kind missing from the per-kind limits to fifteen minutes', async () => {
+    const v = verifier({ accept: 'any', maxLifetimeSec: { user: 3600 } });
+    expect(await reason(v.verify(await mint(keys, serviceClaims(), { iat: NOW_SEC - 10, exp: NOW_SEC + 1000 })))).toBe('invalid_lifetime');
+    expect((await v.verify(await mint(keys, serviceClaims()))).kind).toBe('service');
+    const userOnly = verifier({ maxLifetimeSec: { service: 300 } });
+    expect(await reason(userOnly.verify(await mint(keys, userClaims(), { iat: NOW_SEC - 10, exp: NOW_SEC + 1000 })))).toBe('invalid_lifetime');
+  });
+
 });
 
 describe('remote JWKS', () => {

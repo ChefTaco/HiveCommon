@@ -151,6 +151,8 @@ describe('claims helpers', () => {
     expect(principalFromClaims(base, { accept: 'any', maxLifetimeSec: 900 }).kind).toBe('user');
     expect(() => principalFromClaims({ ...base, iss: '' }, { accept: 'any', maxLifetimeSec: 900 })).toThrow(OathweaveError);
     expect(() => principalFromClaims({ ...base, exp: 100 }, { accept: 'any', maxLifetimeSec: 900 })).toThrow(/lifetime/);
+    expect(principalFromClaims(base, { accept: 'any', maxLifetimeSec: {} }).kind).toBe('user');
+    expect(() => principalFromClaims(base, { accept: 'any', maxLifetimeSec: { user: 1 } })).toThrow(/lifetime/);
   });
 });
 
