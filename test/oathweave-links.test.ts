@@ -3,7 +3,7 @@ import {
   effectivePermissions, endpointProblem, hasAnyRole, hasPermissions, hasScopes, IdentityLinkError, isLoopbackHost,
   isOathweaveEndpoint, OathweaveError, parseIdentityLinks, permissionMatches, principalFromClaims, principalKindOf,
   requireIdentityLink, requirePermissions, statusForReason, uniqueIdentityLink, watchStreamAuthorization, extractScopes,
-  extractRoles, clientIdOf,
+  extractRoles, clientIdOf, LOCAL_USER_ID_PATTERN, OATHWEAVE_NATIVE_ISSUER_PATTERN,
 } from '../src/oathweave/index.js';
 import { ISSUER } from './helpers.js';
 
@@ -35,6 +35,80 @@ describe('identity links', () => {
   ])('rejects %s', (_name, raw, message) => {
     expect(() => parseIdentityLinks(raw)).toThrow(IdentityLinkError);
     expect(() => parseIdentityLinks(raw)).toThrow(message);
+  });
+
+  describe('localUserIdPattern', () => {
+    const relaxed = /^(?!\s)[^\u0000-\u001f\u007f]{1,256}$/u;
+
+    it('keeps the default pattern without the option', () => {
+      expect(LOCAL_USER_ID_PATTERN.test('alice@example.com')).toBe(true);
+      expect(() => parseIdentityLinks([{ ...link, localUserId: 'alice+ops@example.com' }])).toThrow(/localUserId is not valid/);
+    });
+
+    it('accepts labels the pattern allows', () => {
+      for (const localUserId of ['alice+ops@example.com', 'Alice Example', 'ops/team']) {
+        expect(parseIdentityLinks([{ ...link, localUserId }], { localUserIdPattern: relaxed })[0]?.localUserId).toBe(localUserId);
+      }
+      expect(parseIdentityLinks([{ ...link, localId: 'alice+ops@example.com', localUserId: undefined }], { localUserIdPattern: relaxed })[0]?.localUserId)
+        .toBe('alice+ops@example.com');
+    });
+
+    it('still refuses the system and service actors', () => {
+      for (const localUserId of ['system', 'service:magnus', 'service:']) {
+        expect(() => parseIdentityLinks([{ ...link, localUserId }], { localUserIdPattern: /.*/ })).toThrow(/system or a service/);
+      }
+    });
+
+    it('still refuses empty, overlong and non-string values', () => {
+      for (const localUserId of ['', 'x'.repeat(257), 5, null]) {
+        expect(() => parseIdentityLinks([{ ...link, localUserId }], { localUserIdPattern: /.*/ })).toThrow(/localUserId is not valid/);
+      }
+      expect(parseIdentityLinks([{ ...link, localUserId: 'x'.repeat(256) }], { localUserIdPattern: /.*/ })).toHaveLength(1);
+    });
+
+    it('requires the pattern to match the whole value', () => {
+      expect(() => parseIdentityLinks([{ ...link, localUserId: 'alice!' }], { localUserIdPattern: /[a-z]+/ })).toThrow(/localUserId is not valid/);
+      expect(() => parseIdentityLinks([{ ...link, localUserId: '!alice' }], { localUserIdPattern: /[a-z]+/ })).toThrow(/localUserId is not valid/);
+      expect(parseIdentityLinks([{ ...link, localUserId: 'alice' }], { localUserIdPattern: /[a-z]+/ })).toHaveLength(1);
+    });
+
+    it('ignores global and sticky flags', () => {
+      const pattern = /^[a-z+@.]+$/gy;
+      const links = [1, 2, 3].map(index => ({ ...link, subject: `s${index}`, localUserId: 'alice+ops@example.com' }));
+      expect(parseIdentityLinks(links, { localUserIdPattern: pattern })).toHaveLength(3);
+      expect(pattern.lastIndex).toBe(0);
+    });
+
+    it('refuses a pattern that is not a RegExp', () => {
+      expect(() => parseIdentityLinks([link], { localUserIdPattern: '.*' as unknown as RegExp })).toThrow(TypeError);
+    });
+  });
+
+  describe('nativeIssuers', () => {
+    const native = { issuer: 'hive-iam', subject: 'ardent', localUserId: 'ardent-agent' };
+
+    it('refuses a native issuer unless it is listed', () => {
+      expect(() => parseIdentityLinks([native])).toThrow(/issuer must be an https URL$/);
+      expect(() => parseIdentityLinks([native], { nativeIssuers: ['other-iam'] })).toThrow(/https URL or a listed native issuer/);
+    });
+
+    it('accepts a listed native issuer next to https issuers', () => {
+      expect(parseIdentityLinks([native, link], { nativeIssuers: ['hive-iam'] })).toEqual([native, link]);
+      expect(requireIdentityLink(parseIdentityLinks([native], { nativeIssuers: ['hive-iam'] }), { issuer: 'hive-iam', subject: 'ardent' })).toEqual(native);
+    });
+
+    it('still refuses non-https URLs and non-strings', () => {
+      for (const issuer of ['http://oathweave.example.test', 5]) {
+        expect(() => parseIdentityLinks([{ ...native, issuer }], { nativeIssuers: ['hive-iam'] })).toThrow(/issuer/);
+      }
+    });
+
+    it('validates the configured identifiers', () => {
+      expect(OATHWEAVE_NATIVE_ISSUER_PATTERN.test('hive-iam')).toBe(true);
+      for (const nativeIssuers of [['https://oathweave.example.test'], ['Hive'], [''], [5], 'hive-iam']) {
+        expect(() => parseIdentityLinks([link], { nativeIssuers: nativeIssuers as readonly string[] })).toThrow(TypeError);
+      }
+    });
   });
 
   it('accepts localId as an alias of localUserId', () => {
