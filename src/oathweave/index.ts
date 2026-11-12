@@ -42,6 +42,7 @@ export {
   hasPermissions,
   hasScopes,
   IdentityLinkError,
+  LOCAL_USER_ID_PATTERN,
   parseIdentityLinks,
   permissionMatches,
   requireIdentityLink,

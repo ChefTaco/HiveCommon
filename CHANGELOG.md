@@ -6,6 +6,34 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-12
+
+Fixes found while adopting 0.3.0, and two identity-link options. Every change is additive: without
+the new options identity links parse as in 0.3.0.
+
+### Added
+
+- `/oathweave`: `parseIdentityLinks()` takes `localUserIdPattern`, a RegExp that replaces the
+  default `localUserId` pattern, for products whose account labels are wider (for example
+  `alice+ops@example.com`). It must match the whole value; `g` and `y` flags are ignored; values
+  stay 1-256 characters; `system` and `service:` actors are always refused. The default pattern is
+  exported as `LOCAL_USER_ID_PATTERN` and is unchanged.
+- `/oathweave`: `parseIdentityLinks()` takes `nativeIssuers`, native issuer identifiers (each
+  matching `OATHWEAVE_NATIVE_ISSUER_PATTERN`) that a link may name as its `issuer`, for service
+  links to native-issuer tokens. Without it, link issuers must be https URLs as before.
+
+### Fixed
+
+- `/hono`: `registerHealthRoutes()`, `errorHandler()` and `notFoundHandler()` returned a raw
+  `Response`, which dropped headers set earlier in the request with `c.header()`, such as a
+  `traceparent` or `x-request-id` set before the handler ran. They now respond through the Hono
+  context, so those headers stay. Status, body and the existing headers are unchanged.
+- Default clocks read `Date.now()` on every call instead of holding the `Date.now` function found
+  when the object was created. A verifier (token times and the session cache), `MemoryDedupeStore`
+  or logger created before fake timers were installed kept the real clock; they now follow fake
+  timers. `watchStreamAuthorization()`, health and request context use the same default. An
+  explicit `now` option behaves as before.
+
 ## [0.3.0] - 2026-11-12
 
 Native-issuer service tokens. Oathweave signs client-credentials tokens with its native issuer
@@ -97,7 +125,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ChefTaco/HiveCommon/releases/tag/v0.1.0

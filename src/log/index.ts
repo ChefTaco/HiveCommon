@@ -80,7 +80,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const threshold = SEVERITY[level];
   const write = options.write ?? ((line: string) => { process.stdout.write(`${line}\n`); });
   const shouldRedact = options.redact ?? true;
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => Date.now());
   const context = options.context ?? getRequestContext;
   const bindings = options.bindings ?? {};
 

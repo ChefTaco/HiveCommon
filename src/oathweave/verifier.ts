@@ -243,7 +243,7 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
   const defaultAccept = options.accept ?? 'user';
   const timeoutMs = options.requestTimeoutMs ?? OATHWEAVE_REQUEST_TIMEOUT_MS;
   const request: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => Date.now());
   const keys = keySource(options, request, timeoutMs);
   const acceptedIssuers = [...issuers, ...nativeIssuers];
   const sessionTtl = options.sessionCacheTtlMs ?? OATHWEAVE_SESSION_CACHE_TTL_MS;

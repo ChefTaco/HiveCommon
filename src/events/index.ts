@@ -127,7 +127,7 @@ export class MemoryDedupeStore implements DedupeStore {
 
   constructor(options: { readonly maxEntries?: number; readonly now?: () => number } = {}) {
     this.#max = options.maxEntries ?? 10_000;
-    this.#now = options.now ?? Date.now;
+    this.#now = options.now ?? (() => Date.now());
   }
 
   claim(key: string, ttlMs: number): boolean {

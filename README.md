@@ -172,6 +172,21 @@ Identity links name the local account `localUserId`. `localId`, the name older d
 use, is accepted as an alias; an entry that sets both to different values is refused. Parsed links
 always carry `localUserId`.
 
+By default a `localUserId` matches `LOCAL_USER_ID_PATTERN` (`^[A-Za-z0-9][A-Za-z0-9._@:-]{0,255}$`).
+A product whose account labels are wider, such as `alice+ops@example.com`, passes its own
+`localUserIdPattern`. The pattern must match the whole value (`g` and `y` flags are ignored), values
+stay 1-256 characters, and `system` and `service:` actors are refused whatever the pattern allows.
+Link issuers must be https URLs unless `nativeIssuers` lists native identifiers (each matching
+`OATHWEAVE_NATIVE_ISSUER_PATTERN`) for links to service principals; pass the same list as the
+verifier's `nativeIssuers`.
+
+```ts
+const links = parseIdentityLinks(raw, {
+  localUserIdPattern: /^(?!\s)[^\u0000-\u001f\u007f]{1,256}$/u, // any printable label
+  nativeIssuers: ['hive-iam'],                                   // service links keyed by the native issuer
+});
+```
+
 Endpoints must be `https`. For tests against a loopback server, pass `allowInsecureLoopback: true`.
 Native issuer identifiers are names, not endpoints, and are never fetched.
 
@@ -383,6 +398,10 @@ app.onError(errorHandler({ logger: log }));
 app.notFound(notFoundHandler());
 ```
 
+The health routes, `errorHandler()` and `notFoundHandler()` respond through Hono's context, so
+headers set earlier in the request with `c.header()` (a trace or request ID, for example) stay on
+the response.
+
 Requires `hono` 4.13.18 or later, the suite minimum since a recent Hono security advisory.
 
 ### node-http
@@ -446,6 +465,8 @@ existing behaviour with these settings instead of wrapping the shared helpers:
 | `liveBody` (health, `/hono`, `/node-http`) | the standard body | a published `/health/live` body such as `{ status: 'ok' }` |
 | `localId` in identity links | `localUserId` | existing link configs, unchanged |
 | `duplicates: 'ignore'` (identity links) | `'reject'` | granting nothing to a duplicated identity instead of failing at startup |
+| `localUserIdPattern` (identity links) | `LOCAL_USER_ID_PATTERN` | account labels outside the default characters, such as `alice+ops@example.com` |
+| `nativeIssuers` (identity links) | none | service links keyed by Oathweave's native issuer |
 
 ```ts
 const verifier = createOathweaveVerifier({

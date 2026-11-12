@@ -6,6 +6,7 @@
  */
 import type { OathweavePrincipal } from './claims.js';
 import { OathweaveError } from './errors.js';
+import { OATHWEAVE_NATIVE_ISSUER_PATTERN } from './verifier.js';
 
 export interface OathweaveIdentityLink {
   readonly issuer: string;
@@ -34,7 +35,24 @@ export interface ParseIdentityLinksOptions {
    */
   readonly duplicates?: 'reject' | 'ignore';
   readonly maxLinks?: number;
+  /**
+   * What a `localUserId` must look like, in place of the default
+   * `LOCAL_USER_ID_PATTERN` (`^[A-Za-z0-9][A-Za-z0-9._@:-]{0,255}$`). It must match the whole
+   * value, anchored or not, and values are still limited to 1-256 characters. `system` and
+   * `service:` actors stay refused whatever the pattern allows.
+   */
+  readonly localUserIdPattern?: RegExp;
+  /**
+   * Native issuer identifiers (as in the verifier's `nativeIssuers`, for example `hive-iam`) that
+   * a link may name as its `issuer` besides an https URL, for links to service principals whose
+   * tokens Oathweave signs with its native issuer. Each must match
+   * `OATHWEAVE_NATIVE_ISSUER_PATTERN`. Defaults to none: link issuers must be https URLs.
+   */
+  readonly nativeIssuers?: readonly string[];
 }
+
+/** The default shape of a link's `localUserId`. */
+export const LOCAL_USER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@:-]{0,255}$/;
 
 /** `localId` is accepted as an alias of `localUserId`, the name older deployment configs use. */
 const LINK_FIELDS = new Set(['issuer', 'subject', 'localUserId', 'localId', 'role', 'displayName', 'permissions']);
@@ -48,6 +66,29 @@ function isHttpsUrl(value: unknown): value is string {
   }
 }
 
+/** A copy without `g`/`y`, so matching never depends on `lastIndex`. */
+function statelessPattern(pattern: RegExp | undefined): RegExp {
+  if (pattern === undefined) return LOCAL_USER_ID_PATTERN;
+  if (!(pattern instanceof RegExp)) throw new TypeError('localUserIdPattern must be a RegExp');
+  return new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ''));
+}
+
+function matchesWhole(pattern: RegExp, value: string): boolean {
+  const match = pattern.exec(value);
+  return match !== null && match.index === 0 && match[0] === value;
+}
+
+function nativeIssuerSet(value: readonly string[] | undefined): ReadonlySet<string> {
+  if (value === undefined) return new Set();
+  if (!Array.isArray(value)) throw new TypeError('nativeIssuers must be an array');
+  for (const issuer of value as readonly unknown[]) {
+    if (typeof issuer !== 'string' || !OATHWEAVE_NATIVE_ISSUER_PATTERN.test(issuer)) {
+      throw new TypeError('nativeIssuers entries must be lowercase identifiers such as hive-iam');
+    }
+  }
+  return new Set(value);
+}
+
 /**
  * Parse a JSON array of links, for example from `<PRODUCT>_OATHWEAVE_IDENTITIES_JSON`.
  * An entry may name its local account `localUserId` or, as older configs do, `localId`; an
@@ -55,6 +96,8 @@ function isHttpsUrl(value: unknown): value is string {
  * Throws an `IdentityLinkError` naming the first problem; the raw value is never echoed.
  */
 export function parseIdentityLinks(raw: string | unknown, options: ParseIdentityLinksOptions = {}): OathweaveIdentityLink[] {
+  const localUserIdPattern = statelessPattern(options.localUserIdPattern);
+  const nativeIssuers = nativeIssuerSet(options.nativeIssuers);
   let json: unknown = raw;
   if (typeof raw === 'string') {
     try {
@@ -76,9 +119,11 @@ export function parseIdentityLinks(raw: string | unknown, options: ParseIdentity
       throw new IdentityLinkError(`${where}: localId and localUserId disagree`);
     }
     const localUserId = link['localUserId'] ?? localId;
-    if (!isHttpsUrl(issuer)) throw new IdentityLinkError(`${where}: issuer must be an https URL`);
+    if (!isHttpsUrl(issuer) && !(typeof issuer === 'string' && nativeIssuers.has(issuer))) {
+      throw new IdentityLinkError(nativeIssuers.size ? `${where}: issuer must be an https URL or a listed native issuer` : `${where}: issuer must be an https URL`);
+    }
     if (typeof subject !== 'string' || !subject || subject.length > 256) throw new IdentityLinkError(`${where}: subject must be 1-256 characters`);
-    if (typeof localUserId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._@:-]{0,255}$/.test(localUserId)) {
+    if (typeof localUserId !== 'string' || !localUserId || localUserId.length > 256 || !matchesWhole(localUserIdPattern, localUserId)) {
       throw new IdentityLinkError(`${where}: localUserId is not valid`);
     }
     // These identifiers name server-owned actors; a link must never impersonate one.

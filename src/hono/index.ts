@@ -11,6 +11,7 @@
  */
 import type { Context, Env, ErrorHandler, Hono, MiddlewareHandler, NotFoundHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
   createRequestContext,
   runWithRequestContext,
@@ -133,7 +134,8 @@ function respond(c: Context, error: unknown, options: ErrorHandlerOptions): Resp
     requestId,
     onUnexpected: unexpected => options.logger?.error('unhandled error', { err: unexpected, path: c.req.path, method: c.req.method }),
   });
-  return new Response(JSON.stringify(response.body), { status: response.status, headers: response.headers });
+  // Through the context, like the health routes, so headers set earlier in the request survive.
+  return c.body(JSON.stringify(response.body), response.status as ContentfulStatusCode, response.headers);
 }
 
 /** `app.onError(errorHandler())`: HiveError → envelope; everything else → generic 500, logged. */
@@ -154,7 +156,8 @@ export function registerHealthRoutes<E extends Env, L extends object = LiveBody>
   const health = createHealth(options);
   const serve = (kind: 'live' | 'ready') => async (c: Context<E>): Promise<Response> => {
     const result = kind === 'live' ? health.live() : await health.ready();
-    return new Response(c.req.method === 'HEAD' ? null : JSON.stringify(result.body), { status: result.status, headers: result.headers });
+    // Respond through the context so headers set earlier in the request (c.header()) survive.
+    return c.req.method === 'HEAD' ? c.body(null, result.status, result.headers) : c.body(JSON.stringify(result.body), result.status, result.headers);
   };
   for (const path of health.paths.live) app.get(path, serve('live'));
   for (const path of health.paths.ready) app.get(path, serve('ready'));

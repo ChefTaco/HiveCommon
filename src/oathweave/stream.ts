@@ -26,7 +26,7 @@ export interface StreamWatch {
 }
 
 export function watchStreamAuthorization(options: StreamWatchOptions): StreamWatch {
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => Date.now());
   const intervalMs = options.intervalMs ?? OATHWEAVE_STREAM_RECHECK_MS;
   let stopped = false;
   let inFlight = false;
