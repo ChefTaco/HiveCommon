@@ -1,0 +1,383 @@
+# HiveCommon
+
+`@hivemagnus/hive-common` is the shared server kit of the Hive:Magnus suite. It gives every
+product one Oathweave token verifier, one error envelope, one way to serve health, propagate
+request IDs and trace context, read the Hive Registry, log safely and publish HiveEvents.
+
+- ESM only, TypeScript with `.d.ts` output, strict types.
+- One runtime dependency (`jose`); `hono` is an optional peer.
+- Each module is its own subpath, so a product loads only what it uses.
+- `/contracts` and `/errors` are isomorphic, so the browser UI can use them too.
+
+```bash
+npm install @hivemagnus/hive-common
+```
+
+| Subpath | What it is | Runs in |
+| --- | --- | --- |
+| [`/oathweave`](#oathweave) | Oathweave access-token verifier, identity links, permissions, stream re-check | Node |
+| [`/oathweave/conformance`](#conformance-vectors) | Runs the shipped test vectors against any verifier | Node |
+| [`/errors`](#errors) | `HiveError`, the envelope, `toErrorResponse()`, `parseHiveError()` | Node, browser |
+| [`/health`](#health) | `/health/live` and `/health/ready` with dependency checks | Node |
+| [`/context`](#context) | Request IDs, `traceparent`, idempotency keys, async request context | Node |
+| [`/registry`](#registry) | Typed Hive Registry client | Node |
+| [`/log`](#log) | Structured JSON logger and `redact()` | Node |
+| [`/events`](#events) | HiveEvent feed helpers and the ChatterMost notifier | Node |
+| [`/contracts`](#contracts) | Isomorphic types and validators | Node, browser |
+| [`/hono`](#hono) | Hono middleware | Node |
+| [`/node-http`](#node-http) | `node:http` helpers | Node |
+
+## Node support policy
+
+HiveCommon supports the active and maintenance LTS lines of Node.js at their latest security
+release: currently **Node.js 24.22.3+ and 26.13.1+** (`"engines": "^24.22.3 || ^26.13.1"`). When
+Node publishes a security release, the minimums move up in the next HiveCommon release. A Node
+line is dropped, in a minor release, when it reaches end of life. CI tests every supported line.
+
+## Standards
+
+### Error envelope
+
+Every error response in the suite has this body, `Content-Type: application/json` and
+`Cache-Control: no-store`:
+
+```json
+{ "error": { "code": "not_found", "message": "No such project", "requestId": "2f1c…", "details": { "id": "p1" } } }
+```
+
+- `code`: stable, machine-readable, `lower_snake_case` for new codes.
+- `message`: for people. Never contains secrets, stack traces or upstream bodies.
+- `requestId`: the request's `x-request-id`, when known.
+- `details`: optional structured data, such as validation `issues` or an auth `reason`.
+
+Statuses: 400 malformed, 401 missing or invalid credentials (with `WWW-Authenticate`), 403 known
+caller without access, 404, 409, 422 validation, 428 missing precondition (idempotency key), 429
+(with `Retry-After`), 500 internal (generic message only), 503 dependency unavailable.
+
+### Headers
+
+| Header | Rule |
+| --- | --- |
+| `x-request-id` | Read inbound; also accept `x-hive-request-id` and `x-correlation-id`. Generate a UUID when absent or unsafe (1-128 of `[A-Za-z0-9._:@/+=-]`). Echo it on the response and send it to peers. |
+| `traceparent`, `tracestate` | W3C Trace Context. Continue a valid inbound trace with a new span; otherwise start one. Send this service's span to peers. |
+| `Idempotency-Key` | Required on retried mutations; `x-idempotency-key` is accepted too. Both present and different is a 400. |
+| `Authorization: Bearer` | Oathweave access token, RS256. |
+
+### Health
+
+`GET /health/live` is 200 whenever the process can answer and never touches dependencies.
+`GET /health/ready` runs the named checks and is 200 (`ready` or `degraded`) or 503 (`not_ready`):
+
+```json
+{ "status": "not_ready", "service": "hivemem", "version": "1.4.0", "time": "2026-11-12T08:00:00.000Z",
+  "checks": { "database": { "status": "down", "critical": true, "latencyMs": 2001, "error": "timeout" } } }
+```
+
+## Modules
+
+### oathweave
+
+```ts
+import { createOathweaveVerifier, requireIdentityLink, parseIdentityLinks } from '@hivemagnus/hive-common/oathweave';
+
+const verifier = createOathweaveVerifier({
+  issuer: process.env.OATHWEAVE_ISSUER!,          // https only; an array accepts several issuers
+  audience: 'hivemem',                            // this product's resource audience, exact match
+  jwksUrl: process.env.OATHWEAVE_JWKS_URL!,
+  userinfoUrl: process.env.OATHWEAVE_USERINFO_URL, // online session check, recommended
+  accept: 'user',                                 // default; 'service' or 'any' per route
+});
+
+const principal = await verifier.verifyAuthorization(request.headers.get('authorization'));
+// principal.kind === 'user': subject, sessionId, clientId, roles, permissions, scopes, displayName, authTime…
+// principal.kind === 'service': a client-credentials token whose client ID equals its subject.
+
+const links = parseIdentityLinks(process.env.HIVEMEM_OATHWEAVE_IDENTITIES_JSON!, { roles: ['ADMIN', 'VIEWER'] });
+const link = requireIdentityLink(links, principal); // 403 not_linked unless exactly one link matches
+```
+
+What it checks, in order: a compact JWT of at most 16 KiB; header `alg` is `RS256` (so `none` and
+HMAC key confusion never reach a key); signature against the JWKS (cached for 10 minutes and
+refetched, at most every 30 s, when a token names an unknown `kid`); `iss` is one of the issuers;
+`aud` is exactly the audience; `sub`, `iat`, `exp`, `jti` present; `exp`, `nbf` and `iat` within
+30 s of clock tolerance; `exp - iat` and token age at most 900 s; then the principal rules:
+
+- **User:** `actorType: "USER"`, a `sessionId`, a `clientId` other than the subject, string-array
+  `permissions` and (optional) `roles`. With `userinfoUrl`, the session is confirmed online; the
+  answer is shared for 10 s from when the request started (failures for 2 s).
+- **Service:** `clientId` (or `client_id`) equals `sub`, `actorType: "SERVICE_ACCOUNT"`,
+  `token_type: "access"`, no session.
+
+Every refusal is an `OathweaveError` (a `HiveError`) with a stable `reason`:
+
+| Status | Code | Reasons |
+| --- | --- | --- |
+| 401 | `unauthorized` | `missing_token` |
+| 401 | `invalid_token` | `malformed_token`, `algorithm_not_allowed`, `unknown_key`, `invalid_signature`, `expired`, `not_yet_valid`, `invalid_issuer`, `invalid_audience`, `invalid_lifetime`, `invalid_claims`, `wrong_principal_kind`, `session_inactive`, `subject_mismatch` |
+| 403 | `forbidden` / `insufficient_permission` | `not_linked`, `insufficient_permission` |
+| 503 | `auth_unavailable` | `jwks_unavailable`, `identity_unavailable` |
+
+Also: `hasPermissions()` (with `*` segment wildcards, like the Oathweave SDK), `requirePermissions()`,
+`hasAnyRole()`, `hasScopes()`, `effectivePermissions()` (a link's ceiling), and
+`watchStreamAuthorization()` for SSE and WebSocket connections:
+
+```ts
+const watch = watchStreamAuthorization({
+  recheck: () => verifier.verify(token), // every 5 s; the session cache keeps it cheap
+  expiresAt: principal.expiresAt,        // ends the stream at token expiry
+  onEnd: () => stream.close(),           // sign-out takes effect within about 15 s
+});
+```
+
+Endpoints must be `https`. For tests against a loopback server, pass `allowInsecureLoopback: true`.
+
+### Conformance vectors
+
+`test-vectors/oathweave/vectors.json` ships a test JWKS and twelve pre-signed tokens (valid user,
+valid service, expired, not yet valid, wrong audience, wrong issuer, bad signature, unknown `kid`,
+`alg: none`, HS256 key confusion, overlong lifetime, user without session), evaluated at a fixed
+clock so they never expire. Run them against your product's verifier:
+
+```ts
+import { runOathweaveConformance } from '@hivemagnus/hive-common/oathweave/conformance';
+
+it('meets the Oathweave conformance vectors', async () => {
+  await runOathweaveConformance((token, ctx) => createProductVerifier({
+    issuer: ctx.issuer, audience: ctx.audience, jwksUrl: ctx.jwksUrl, userinfoUrl: ctx.userinfoUrl,
+    fetch: ctx.fetch,          // serves the vectors' JWKS and userinfo
+    now: () => ctx.nowMs,      // the fixed clock
+  })(token));
+});
+```
+
+It throws a readable error listing failed vectors. A refusal passes when the verifier rejects
+(and any numeric `status` on the error matches); `strictReasons: true` also compares `reason`.
+
+### errors
+
+```ts
+import { HiveError, toErrorResponse, parseHiveError, parseHiveErrorResponse } from '@hivemagnus/hive-common/errors';
+
+throw new HiveError('quota_exceeded', 'Monthly quota reached', { status: 429, details: { limit: 1000 } });
+throw HiveError.notFound('No such project');
+
+const { status, body, headers } = toErrorResponse(error, { requestId, onUnexpected: e => log.error('unhandled', { err: e }) });
+
+const error = await parseHiveErrorResponse(await fetch(url)); // any product, any legacy shape
+if (HiveError.is(error, 'not_found')) { /* … */ }
+```
+
+`parseHiveError(status, body)` accepts text, bytes or parsed JSON and recognises every shape the
+suite has used; `error.shape` says which. Remote codes are kept as sent (compare with
+`HiveError.is()`, case-insensitively); messages are bounded and cleaned; HTML error pages are
+replaced by the status's default message.
+
+| Shape | Body | Products |
+| --- | --- | --- |
+| `envelope` | `{error:{code,message,requestId?,details?}}` | Hive standard, Ardent, ArdentStudio, Registry |
+| `magnus` | `{success:false,error:{code,message}}` | Magnus |
+| `oathweave` | `{error:"CODE",message}` | Oathweave |
+| `string` | `{error:"human text"}` | Emberpath, HiveSkills, Cindertrace |
+| `code` | `{error:"CODE"}` | Embermend, OAuth without description |
+| `fastapi` / `fastapi-validation` | `{detail:"text"}` / `{detail:[{loc,msg,type}]}` | HiveMem |
+| `mattermost` | `{id,message,status_code,request_id}` | ChatterMost |
+| `oauth` | `{error,error_description}` | OAuth 2.0 endpoints |
+| `message`, `text`, `empty`, `unknown` | `{message}`, plain text, no body, anything else | proxies and others |
+
+### health
+
+```ts
+import { createHealth } from '@hivemagnus/hive-common/health';
+
+const health = createHealth({
+  service: 'hivemem', version: '1.4.0',
+  timeoutMs: 2000,
+  checks: [
+    { name: 'database', check: () => db.ping() },
+    { name: 'search', critical: false, check: signal => fetch(searchUrl, { signal }).then(r => r.ok) },
+  ],
+  aliases: true, // also serve /health, /healthz, /livez, /live, /api/health, /ready, /readyz
+});
+const response = await health.handle('/health/ready'); // { status: 200 | 503, body, headers } or undefined
+```
+
+A check is down when it throws, returns `false` or `{ ok: false }`, or exceeds its timeout (its
+`signal` aborts). Error text is hidden unless `exposeErrors: true`. Serve legacy aliases only
+while old clients still call them.
+
+### context
+
+```ts
+import { createRequestContext, runWithRequestContext, getRequestContext, outboundHeaders, readIdempotencyKey } from '@hivemagnus/hive-common/context';
+
+const context = createRequestContext(req.headers);          // { requestId, trace, parentTrace, tracestate, … }
+await runWithRequestContext(context, () => handle(req));
+// anywhere below:
+await fetch(peerUrl, { headers: { ...outboundHeaders(), authorization } });
+const key = readIdempotencyKey(req.headers);                // string | undefined; 400 on malformed or conflicting
+```
+
+Also `parseTraceparent()`, `formatTraceparent()`, `generateTraceparent()`, `childTraceparent()`,
+`readRequestId()`, `requireIdempotencyKey()` (428 when missing). On an edge service exposed to the
+internet, pass `trustInbound: false` so callers cannot choose IDs.
+
+### registry
+
+```ts
+import { createRegistryClient } from '@hivemagnus/hive-common/registry';
+
+const registry = createRegistryClient({
+  baseUrl: 'https://hive.example.com/api/registry', // or the native private-network URL with allowHttp
+  token: process.env.HIVE_REGISTRY_READ_TOKEN,       // omit for the public view
+  ca: process.env.HIVE_REGISTRY_CA_PEM,              // optional private CA; or pass fetch
+  trust: { emberpath: { ca: emberpathCaPem } },      // TLS trust per product, from local config
+});
+const installation = await registry.installation();
+const installed = await registry.installedProducts();
+const endpoint = await registry.endpoint('emberpath'); // { url, internal, trust } or undefined
+```
+
+`product()` and `connection()` return `undefined` for unknown products; other failures are
+`HiveError`s parsed from the registry's envelope. The registry stores no TLS material, so
+`endpoint()` returns the trust you configure. `createCaFetch({ ca })` is a small `node:https`
+fetch that trusts only the given CA.
+
+### log
+
+```ts
+import { createLogger, redact } from '@hivemagnus/hive-common/log';
+
+const log = createLogger({ bindings: { service: 'hivemem' } }); // level from LOG_LEVEL, default info
+log.info('memory stored', { memoryId, bytes });                 // adds requestId and traceId from the context
+const jobLog = log.child({ job: 'reindex' });
+log.error('upstream failed', { err, headers: req.headers });    // authorization and cookies masked
+```
+
+`redact()` masks values under secret-looking keys (authorization, cookie, password, secret, token,
+`*key`, credentials, webhook URLs, session IDs) and scrubs strings everywhere: bearer and basic
+credentials, JWTs, provider token formats, private keys, URL credentials and secret query
+parameters. Numbers and booleans under such keys are kept, so `inputTokens: 512` survives.
+
+### events
+
+```ts
+import { ChatterMostNotifier, parseFeedQuery, feedPage, encodeCursor } from '@hivemagnus/hive-common/events';
+
+// GET /v1/hive/events?after=<cursor>&limit=<n>
+const { after, limit } = parseFeedQuery(url.searchParams);       // limit 1-200, default 50
+const rows = store.eventsAfter(after, limit + 1);
+return Response.json(feedPage(rows.map(toHiveEvent), limit, event => encodeCursor({ id: event.id })));
+
+const notifier = new ChatterMostNotifier({
+  webhookUrl: process.env.CHATTERMOST_WEBHOOK_URL!, // a secret; never logged
+  linkBaseUrl: 'https://hive.example.com',
+});
+await notifier.notify(event); // { status: 'sent' | 'duplicate' | 'failed', attempts }
+```
+
+The notifier validates the event, posts a Mattermost incoming-webhook payload (Markdown and
+mentions in event text are neutralised), times out each attempt, retries 408, 429 (honouring
+`Retry-After`), 5xx and network errors with exponential backoff and jitter, and delivers each
+event ID once per 24 h. Pass a shared `DedupeStore` to deduplicate across replicas.
+
+### contracts
+
+```ts
+import { validateHiveEvent, type HiveEvent, type Page, type ErrorEnvelope } from '@hivemagnus/hive-common/contracts';
+
+const result = validateHiveEvent(json);           // { ok: true, value } | { ok: false, issues }
+```
+
+HiveEvent v1:
+
+```ts
+interface HiveEvent {
+  id: string; product: string; type: string; severity: 'info' | 'warning' | 'critical';
+  title: string; summary: string; occurredAt: string; // RFC 3339 UTC
+  subject?: { actorId?: string; agentRef?: string; nodeId?: string };
+  link: { product: string; path: string };            // same-origin console path
+  sourceRef?: string;
+}
+```
+
+Also `Page<T>` (`{ data, nextCursor }`), `AgentIdentity` (`{ agentRef: "<nodeId>~<profile>",
+actorId }`, segments `[a-z0-9_-]{2,32}`), `ErrorEnvelope`, `HIVE_HEADERS`. Validators drop unknown
+fields by default; producers should pass `{ strict: true }`. The validators are hand-written so
+the browser bundle gains no dependency.
+
+### hono
+
+```ts
+import { Hono } from 'hono';
+import { requestContext, oathweaveAuth, requirePermission, errorHandler, notFoundHandler, registerHealthRoutes, requirePrincipal, type HiveEnv } from '@hivemagnus/hive-common/hono';
+
+const app = new Hono<HiveEnv>();
+app.use(requestContext());
+registerHealthRoutes(app, { checks, aliases: true });
+app.use('/v1/*', oathweaveAuth(verifier, { authorize: principal => { requireIdentityLink(links, principal); } }));
+app.get('/v1/memories', requirePermission(['hivemem:read']), c => c.json(list(requirePrincipal(c))));
+app.onError(errorHandler({ logger: log }));
+app.notFound(notFoundHandler());
+```
+
+Requires `hono` 4.13.18 or later, the suite minimum since a recent Hono security advisory.
+
+### node-http
+
+```ts
+import http from 'node:http';
+import { hiveHandler, authenticate, sendJson } from '@hivemagnus/hive-common/node-http';
+
+http.createServer(hiveHandler(async (req, res) => {
+  const principal = await authenticate(req, verifier);
+  sendJson(res, 200, { subject: principal.subject });
+}, { health: { checks }, logger: log })).listen(8080);
+```
+
+`hiveHandler()` adds the request context, health routes and the error envelope; anything thrown
+becomes an envelope, and a handler that sends nothing gets a 404.
+
+## Adopting HiveCommon in a product
+
+1. **Install** `@hivemagnus/hive-common` (and `hono` ≥ 4.13.18 for Hono products).
+2. **Replace the verifier copy.** Delete `oathweave.ts` / `oathweave-verifier.ts` and build the
+   verifier with `createOathweaveVerifier()` from the same `OATHWEAVE_*` settings. Use
+   `accept: 'service'` (or `'any'`) on routes that took the separate service verifier. Map
+   principals through `parseIdentityLinks()` / `requireIdentityLink()`.
+3. **Add the conformance test** with `runOathweaveConformance()` and keep the old verifier tests
+   that cover product-specific rules.
+4. **Adopt the envelope.** Throw `HiveError`s and install `errorHandler()` / `hiveHandler()`.
+   Keep the old body shape only for clients that still parse it, and plan its removal.
+   Clients (including HiveXUI) parse peers with `parseHiveError()`.
+5. **Adopt request context.** Install `requestContext()`, log with `createLogger()`, and pass
+   `outboundHeaders()` on calls to peers.
+6. **Serve `/health/live` and `/health/ready`**, with `aliases` for paths current deployments probe.
+7. **Publish HiveEvents** at `GET /v1/hive/events` with `feedPage()`, and announce through
+   `ChatterMostNotifier` where the product posts to ChatterMost today.
+
+Behaviour that changes when a product adopts the shared verifier:
+
+- Clock tolerance is 30 s (the copies used 0).
+- An unreachable JWKS or userinfo is a 503 `auth_unavailable`, not a 401, so clients retry
+  instead of signing people out. Access is still refused.
+- A missing `roles` claim means no roles instead of a refusal (ArdentStudio already allowed it).
+- `authTime` is epoch seconds, `undefined` when absent or invalid (Magnus semantics; some copies
+  exposed `authenticatedAt` in milliseconds).
+- Duplicate identity links fail at startup by default (`duplicates: 'ignore'` keeps the old
+  Magnus behaviour of granting nothing to that identity).
+
+## Development
+
+```bash
+npm ci
+npm run hooks:install
+npm run verify        # privacy tests, scans, typecheck, lint, tests, build, package check
+npm run test:coverage
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Security reports:
+[SECURITY.md](SECURITY.md).
+
+## License
+
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE).
