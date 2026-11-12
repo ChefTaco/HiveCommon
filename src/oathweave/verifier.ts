@@ -18,8 +18,10 @@ import {
   type JWTVerifyGetKey,
 } from 'jose';
 import {
+  CLIENT_ID_CLAIMS,
   principalFromClaims,
   type AcceptPrincipal,
+  type ClientIdClaim,
   type OathweavePrincipal,
   type OathweaveServicePrincipal,
   type OathweaveUserPrincipal,
@@ -69,8 +71,22 @@ export interface OathweaveVerifierOptions extends EndpointOptions {
   readonly jwksCacheMaxAgeMs?: number;
   /** Minimum time between refetches triggered by an unknown `kid` (key rotation). Defaults to 30 s. */
   readonly jwksCooldownMs?: number;
+  /**
+   * How long a userinfo answer is reused, in milliseconds. Defaults to 10 000; 0 checks the
+   * session online on every call.
+   */
   readonly sessionCacheTtlMs?: number;
   readonly sessionCacheMax?: number;
+  /**
+   * Refuse a token without a `roles` array. Defaults to false, where an absent `roles` claim
+   * means no roles. A present claim that is not a string array is always refused.
+   */
+  readonly requireRoles?: boolean;
+  /**
+   * Which claim names supply the client ID: `clientId` (Oathweave), `client_id` (RFC 9068) or
+   * `either` (the default). When both claims are present they must agree in every mode.
+   */
+  readonly clientIdClaim?: ClientIdClaim;
 }
 
 export interface VerifyOptions {
@@ -166,6 +182,10 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
   const maxLifetimeSec = options.maxLifetimeSec ?? OATHWEAVE_MAX_LIFETIME_SEC;
   if (!(clockTolerance >= 0 && clockTolerance <= 300)) throw new TypeError('clockToleranceSec must be 0-300');
   if (!(maxLifetimeSec > 0 && maxLifetimeSec <= 86_400)) throw new TypeError('maxLifetimeSec must be 1-86400');
+  const requireRoles = options.requireRoles ?? false;
+  const clientIdClaim = options.clientIdClaim ?? 'either';
+  if (typeof requireRoles !== 'boolean') throw new TypeError('requireRoles must be a boolean');
+  if (!CLIENT_ID_CLAIMS.includes(clientIdClaim)) throw new TypeError("clientIdClaim must be 'clientId', 'client_id' or 'either'");
 
   const defaultAccept = options.accept ?? 'user';
   const timeoutMs = options.requestTimeoutMs ?? OATHWEAVE_REQUEST_TIMEOUT_MS;
@@ -250,7 +270,12 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
     // jose accepts an audience array that contains ours; Oathweave issues exactly one audience.
     if (payload.aud !== options.audience) throw new OathweaveError('invalid_audience');
 
-    const principal = principalFromClaims(payload, { accept: verifyOptions.accept ?? defaultAccept, maxLifetimeSec });
+    const principal = principalFromClaims(payload, {
+      accept: verifyOptions.accept ?? defaultAccept,
+      maxLifetimeSec,
+      requireRoles,
+      clientIdClaim,
+    });
     if (principal.kind === 'user' && options.userinfoUrl) {
       const displayName = await sessionCheck(token, principal.subject);
       return { ...principal, displayName, sessionChecked: true };

@@ -35,6 +35,9 @@ function app() {
   return { hono, logger };
 }
 
+const TRACE_ID = '4bf92f3577b34da6a3ce929d0e0e4736';
+const TRACEPARENT = `00-${TRACE_ID}-00f067aa0ba902b7-01`;
+
 const bearer = async (claims = userClaims()) => ({ authorization: `Bearer ${await mint(keys, claims)}` });
 
 describe('requestContext', () => {
@@ -44,6 +47,26 @@ describe('requestContext', () => {
     expect(adopted.headers.get('x-request-id')).toBe('corr-1');
     const created = await hono.request('/health/live');
     expect(created.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('continues the inbound trace while generating its own request IDs', async () => {
+    const hono = new Hono<HiveEnv>();
+    hono.use(requestContext({ trustInboundRequestId: false, trustInboundTrace: true }));
+    hono.get('/', c => c.json({ trace: getHiveContext(c)?.trace.traceId, parent: getHiveContext(c)?.parentTrace?.spanId ?? null }));
+    const response = await hono.request('/', { headers: { 'x-request-id': 'caller-id', traceparent: TRACEPARENT } });
+    expect(response.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await response.json()).toEqual({ trace: TRACE_ID, parent: '00f067aa0ba902b7' });
+  });
+
+  it('can trust the request ID but not the trace', async () => {
+    const hono = new Hono<HiveEnv>();
+    hono.use(requestContext({ trustInbound: false, trustInboundRequestId: true }));
+    hono.get('/', c => c.json({ trace: getHiveContext(c)?.trace.traceId, parent: getHiveContext(c)?.parentTrace?.spanId ?? null }));
+    const response = await hono.request('/', { headers: { 'x-request-id': 'caller-id', traceparent: TRACEPARENT } });
+    expect(response.headers.get('x-request-id')).toBe('caller-id');
+    const body = await response.json() as { trace: string; parent: string | null };
+    expect(body.parent).toBeNull();
+    expect(body.trace).not.toBe(TRACE_ID);
   });
 
   it('can skip the response header', async () => {
@@ -153,6 +176,20 @@ describe('registerHealthRoutes', () => {
     expect(await ready.json()).toMatchObject({ status: 'ready', checks: { db: { status: 'up' } } });
     const head = await hono.request('/health/ready', { method: 'HEAD' });
     expect(head.status).toBe(200);
+    expect(await head.text()).toBe('');
+  });
+
+  it('serves a product liveness body on the standard and alias paths', async () => {
+    const hono = new Hono();
+    registerHealthRoutes(hono, { aliases: { live: ['/healthz'] }, liveBody: standard => ({ status: 'ok', service: standard.service ?? null }), service: 'skills' });
+    for (const path of ['/health/live', '/healthz']) {
+      const response = await hono.request(path);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(await response.json()).toEqual({ status: 'ok', service: 'skills' });
+    }
+    expect(await (await hono.request('/health/ready')).json()).toMatchObject({ status: 'ready', service: 'skills' });
+    const head = await hono.request('/health/live', { method: 'HEAD' });
     expect(await head.text()).toBe('');
   });
 

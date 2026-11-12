@@ -53,12 +53,23 @@ function nonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-/** The client claim: Oathweave's `clientId`, or RFC 9068 `client_id`. Both present must agree. */
-export function clientIdOf(payload: JWTPayload): string | undefined {
+/**
+ * Which claim names carry the client ID: Oathweave's `clientId`, RFC 9068 `client_id`, or
+ * `either` (the default).
+ */
+export type ClientIdClaim = 'clientId' | 'client_id' | 'either';
+
+export const CLIENT_ID_CLAIMS: readonly ClientIdClaim[] = ['clientId', 'client_id', 'either'];
+
+/**
+ * The client claim: Oathweave's `clientId`, or RFC 9068 `client_id`. Both present must agree,
+ * whichever name is accepted. With `clientId` or `client_id`, only that claim supplies the value.
+ */
+export function clientIdOf(payload: JWTPayload, claim: ClientIdClaim = 'either'): string | undefined {
   const camel = payload['clientId'];
   const snake = payload['client_id'];
   if (camel !== undefined && snake !== undefined && camel !== snake) return undefined;
-  const value = camel ?? snake;
+  const value = claim === 'clientId' ? camel : claim === 'client_id' ? snake : camel ?? snake;
   return typeof value === 'string' ? value : undefined;
 }
 
@@ -69,16 +80,19 @@ export function extractScopes(payload: JWTPayload): string[] {
   return [...new Set(list.map(item => item.trim()).filter(Boolean))];
 }
 
-/** Roles; an absent claim is no roles. A present claim that is not a string array is invalid. */
-export function extractRoles(payload: JWTPayload): string[] | undefined {
+/**
+ * Roles; an absent claim is no roles, or invalid when `required` is true. A present claim that
+ * is not a string array is invalid.
+ */
+export function extractRoles(payload: JWTPayload, required = false): string[] | undefined {
   const roles = payload['roles'];
-  if (roles === undefined) return [];
+  if (roles === undefined) return required ? undefined : [];
   return stringArray(roles) ? [...roles] : undefined;
 }
 
 /** A service token is one whose client ID equals its subject. */
-export function principalKindOf(payload: JWTPayload): PrincipalKind {
-  const clientId = clientIdOf(payload);
+export function principalKindOf(payload: JWTPayload, claim: ClientIdClaim = 'either'): PrincipalKind {
+  const clientId = clientIdOf(payload, claim);
   return clientId !== undefined && clientId === payload.sub ? 'service' : 'user';
 }
 
@@ -90,6 +104,10 @@ export interface ClaimPolicy {
   readonly accept: AcceptPrincipal;
   /** Largest allowed `exp - iat`, in seconds. */
   readonly maxLifetimeSec: number;
+  /** Refuse a token without a `roles` claim. Defaults to false: an absent claim is no roles. */
+  readonly requireRoles?: boolean;
+  /** Which claim names supply the client ID. Defaults to `either`. */
+  readonly clientIdClaim?: ClientIdClaim;
 }
 
 /**
@@ -107,11 +125,12 @@ export function principalFromClaims(payload: JWTPayload, policy: ClaimPolicy): O
   }
   if (!nonEmpty(sub) || !nonEmpty(jti) || !nonEmpty(iss)) throw new OathweaveError('invalid_claims');
   const permissions = payload['permissions'];
-  const roles = extractRoles(payload);
-  const clientId = clientIdOf(payload);
+  const clientIdClaim = policy.clientIdClaim ?? 'either';
+  const roles = extractRoles(payload, policy.requireRoles ?? false);
+  const clientId = clientIdOf(payload, clientIdClaim);
   if (!stringArray(permissions) || roles === undefined || clientId === undefined) throw new OathweaveError('invalid_claims');
 
-  const kind = principalKindOf(payload);
+  const kind = principalKindOf(payload, clientIdClaim);
   if (policy.accept !== 'any' && policy.accept !== kind) throw new OathweaveError('wrong_principal_kind', { details: { kind } });
 
   const base = {

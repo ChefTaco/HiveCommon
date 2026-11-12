@@ -37,6 +37,30 @@ describe('identity links', () => {
     expect(() => parseIdentityLinks(raw)).toThrow(message);
   });
 
+  it('accepts localId as an alias of localUserId', () => {
+    const { localUserId, ...rest } = link;
+    expect(parseIdentityLinks([{ ...rest, localId: localUserId }])).toEqual([link]);
+    expect(parseIdentityLinks(JSON.stringify([{ ...rest, localId: localUserId }]))).toEqual([link]);
+    expect(parseIdentityLinks([{ ...link, localId: localUserId }])).toEqual([link]);
+    expect(parseIdentityLinks([{ ...link, localId: localUserId }])[0]).not.toHaveProperty('localId');
+  });
+
+  it.each<[string, Record<string, unknown>, RegExp]>([
+    ['localId and localUserId that disagree', { localId: 'bob' }, /localId and localUserId disagree/],
+    ['an invalid localId', { localUserId: undefined, localId: ' bad' }, /localUserId is not valid/],
+    ['a non-string localId', { localUserId: undefined, localId: 5 }, /localUserId is not valid/],
+    ['a localId naming the system actor', { localUserId: undefined, localId: 'system' }, /system or a service/],
+    ['a localId naming a service actor', { localUserId: undefined, localId: 'service:magnus' }, /system or a service/],
+  ])('rejects %s', (_name, extra, message) => {
+    expect(() => parseIdentityLinks([{ ...link, ...extra }])).toThrow(IdentityLinkError);
+    expect(() => parseIdentityLinks([{ ...link, ...extra }])).toThrow(message);
+  });
+
+  it('treats an alias link and a localUserId link for one identity as duplicates', () => {
+    const { localUserId, ...rest } = link;
+    expect(() => parseIdentityLinks([link, { ...rest, localId: localUserId }])).toThrow(/duplicates/);
+  });
+
   it('enforces allowed roles and permissions', () => {
     expect(() => parseIdentityLinks([link], { roles: ['VIEWER'] })).toThrow(/role/);
     expect(() => parseIdentityLinks([{ ...link, role: undefined }], { roles: ['ADMIN'] })).toThrow(/role/);
@@ -109,6 +133,17 @@ describe('claims helpers', () => {
     expect(principalKindOf({ sub: 'x', clientId: 'x' })).toBe('service');
     expect(principalKindOf({ sub: 'x', clientId: 'y' })).toBe('user');
     expect(principalKindOf({ sub: 'x' })).toBe('user');
+  });
+
+  it('applies the strict legacy claim options', () => {
+    expect(extractRoles({}, true)).toBeUndefined();
+    expect(extractRoles({ roles: ['A'] }, true)).toEqual(['A']);
+    expect(clientIdOf({ client_id: 'x' }, 'clientId')).toBeUndefined();
+    expect(clientIdOf({ clientId: 'x' }, 'client_id')).toBeUndefined();
+    expect(clientIdOf({ clientId: 'x', client_id: 'x' }, 'clientId')).toBe('x');
+    expect(clientIdOf({ clientId: 'x', client_id: 'y' }, 'client_id')).toBeUndefined();
+    expect(principalKindOf({ sub: 'x', client_id: 'x' }, 'clientId')).toBe('user');
+    expect(principalKindOf({ sub: 'x', client_id: 'x' }, 'client_id')).toBe('service');
   });
 
   it('applies claim rules directly', () => {

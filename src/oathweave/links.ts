@@ -36,7 +36,8 @@ export interface ParseIdentityLinksOptions {
   readonly maxLinks?: number;
 }
 
-const LINK_FIELDS = new Set(['issuer', 'subject', 'localUserId', 'role', 'displayName', 'permissions']);
+/** `localId` is accepted as an alias of `localUserId`, the name older deployment configs use. */
+const LINK_FIELDS = new Set(['issuer', 'subject', 'localUserId', 'localId', 'role', 'displayName', 'permissions']);
 
 function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== 'string') return false;
@@ -49,6 +50,8 @@ function isHttpsUrl(value: unknown): value is string {
 
 /**
  * Parse a JSON array of links, for example from `<PRODUCT>_OATHWEAVE_IDENTITIES_JSON`.
+ * An entry may name its local account `localUserId` or, as older configs do, `localId`; an
+ * entry that sets both to different values is refused. Parsed links always use `localUserId`.
  * Throws an `IdentityLinkError` naming the first problem; the raw value is never echoed.
  */
 export function parseIdentityLinks(raw: string | unknown, options: ParseIdentityLinksOptions = {}): OathweaveIdentityLink[] {
@@ -68,7 +71,11 @@ export function parseIdentityLinks(raw: string | unknown, options: ParseIdentity
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new IdentityLinkError(`${where} must be an object`);
     const link = item as Record<string, unknown>;
     for (const key of Object.keys(link)) if (!LINK_FIELDS.has(key)) throw new IdentityLinkError(`${where} has unknown field ${key.slice(0, 40)}`);
-    const { issuer, subject, localUserId, role, displayName, permissions } = link;
+    const { issuer, subject, localId, role, displayName, permissions } = link;
+    if (link['localUserId'] !== undefined && localId !== undefined && link['localUserId'] !== localId) {
+      throw new IdentityLinkError(`${where}: localId and localUserId disagree`);
+    }
+    const localUserId = link['localUserId'] ?? localId;
     if (!isHttpsUrl(issuer)) throw new IdentityLinkError(`${where}: issuer must be an https URL`);
     if (typeof subject !== 'string' || !subject || subject.length > 256) throw new IdentityLinkError(`${where}: subject must be 1-256 characters`);
     if (typeof localUserId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._@:-]{0,255}$/.test(localUserId)) {
