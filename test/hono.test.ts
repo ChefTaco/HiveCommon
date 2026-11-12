@@ -5,7 +5,7 @@ import {
   errorHandler, getHiveContext, getPrincipal, notFoundHandler, oathweaveAuth, registerHealthRoutes, requestContext,
   requirePermission, requirePrincipal, requireRole, requireScope, type HiveEnv,
 } from '../src/hono/index.js';
-import { getRequestContext } from '../src/context/index.js';
+import { formatTraceparent, getRequestContext } from '../src/context/index.js';
 import { HiveError } from '../src/errors/index.js';
 import { createOathweaveVerifier, requireIdentityLink } from '../src/oathweave/index.js';
 import { AUDIENCE, ISSUER, mint, NOW_MS, serviceClaims, testKeys, userClaims } from './helpers.js';
@@ -165,6 +165,34 @@ describe('errorHandler', () => {
 });
 
 describe('registerHealthRoutes', () => {
+  it('keeps headers set earlier in the request', async () => {
+    const hono = new Hono<HiveEnv>();
+    hono.use(requestContext());
+    // A middleware that sets response headers before the handler runs, as trace propagation does.
+    hono.use(async (c, next) => {
+      const context = getHiveContext(c);
+      if (context) c.header('traceparent', formatTraceparent(context.trace));
+      c.header('x-served-by', 'fixture');
+      await next();
+    });
+    registerHealthRoutes(hono, { aliases: true, checks: [{ name: 'db', check: () => false }] });
+    hono.get('/boom', () => { throw new HiveError('conflict', 'Version changed', { status: 409 }); });
+    hono.onError(errorHandler());
+    hono.notFound(notFoundHandler());
+    for (const [path, method, status] of [
+      ['/health/live', 'GET', 200], ['/healthz', 'GET', 200], ['/health/ready', 'GET', 503], ['/health/ready', 'HEAD', 503],
+      ['/boom', 'GET', 409], ['/missing', 'GET', 404],
+    ] as const) {
+      const response = await hono.request(path, { method, headers: { 'x-request-id': 'req-1', traceparent: TRACEPARENT } });
+      expect(response.status, `${method} ${path}`).toBe(status);
+      expect(response.headers.get('x-request-id'), `${method} ${path}`).toBe('req-1');
+      expect(response.headers.get('traceparent'), `${method} ${path}`).toMatch(new RegExp(`^00-${TRACE_ID}-[0-9a-f]{16}-0[01]$`));
+      expect(response.headers.get('x-served-by'), `${method} ${path}`).toBe('fixture');
+      expect(response.headers.get('content-type'), `${method} ${path}`).toBe('application/json; charset=utf-8');
+      if (path.startsWith('/health')) expect(response.headers.get('cache-control')).toBe('no-store');
+    }
+  });
+
   it('serves standard and alias paths', async () => {
     const { hono } = app();
     for (const path of ['/health/live', '/healthz', '/health']) {
