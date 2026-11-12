@@ -15,6 +15,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = resolve(root, 'test-vectors/oathweave');
 
 const ISSUER = 'https://oathweave.example.test';
+// Oathweave's native issuer (its JWT_ISSUER): it signs client-credentials tokens with the same keys.
+const NATIVE_ISSUER = 'conformance-iam';
 const AUDIENCE = 'conformance';
 const NOW = Date.UTC(2026, 0, 1, 0, 0, 0) / 1000; // 2026-01-01T00:00:00Z
 const KID = 'conformance-1';
@@ -109,12 +111,19 @@ const vectors = [
     token: await sign(userClaims, { ...user, iat: NOW - 60, exp: NOW + 3540 }), expect: reject('invalid_lifetime') },
   { name: 'user-without-session', description: 'A USER token with no session cannot be revoked and is refused.', principal: 'user',
     token: await sign({ ...userClaims, sessionId: undefined }, user), expect: reject('invalid_claims') },
+  { name: 'valid-native-service', description: 'A client-credentials token signed with the configured native issuer and the same keys.', principal: 'service',
+    token: await sign(serviceClaims, { ...service, iss: NATIVE_ISSUER, iat: NOW - 30, exp: NOW + 270 }), expect: acceptService },
+  { name: 'unconfigured-native-issuer', description: 'A client-credentials token from a native issuer that is not configured.', principal: 'service',
+    token: await sign(serviceClaims, { ...service, iss: 'impostor-iam', iat: NOW - 30, exp: NOW + 270 }), expect: reject('invalid_issuer') },
+  { name: 'native-service-lifetime-too-long', description: 'A one-hour client-credentials token from the native issuer.', principal: 'service',
+    token: await sign(serviceClaims, { ...service, iss: NATIVE_ISSUER, iat: NOW - 30, exp: NOW + 3570 }), expect: reject('invalid_lifetime') },
 ];
 
 const document = {
   schema: 1,
   description: 'Oathweave access-token conformance vectors. Synthetic: the signing keys were discarded after generation.',
   issuer: ISSUER,
+  nativeIssuers: [NATIVE_ISSUER],
   audience: AUDIENCE,
   jwksUrl: `${ISSUER}/jwks`,
   userinfoUrl: `${ISSUER}/userinfo`,

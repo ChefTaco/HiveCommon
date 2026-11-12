@@ -22,6 +22,7 @@ import {
   principalFromClaims,
   type AcceptPrincipal,
   type ClientIdClaim,
+  type OathweaveLifetimeLimits,
   type OathweavePrincipal,
   type OathweaveServicePrincipal,
   type OathweaveUserPrincipal,
@@ -42,10 +43,29 @@ export const OATHWEAVE_MAX_LIFETIME_SEC = 900;
 export const OATHWEAVE_DEFAULT_CLOCK_TOLERANCE_SEC = 30;
 /** Longest accepted compact token. Real Oathweave tokens are well under 4 KiB. */
 export const OATHWEAVE_MAX_TOKEN_LENGTH = 16_384;
+/**
+ * What a native issuer identifier must look like: a lowercase name such as `hive-iam`, never a
+ * URL, so it cannot be confused with an https issuer.
+ */
+export const OATHWEAVE_NATIVE_ISSUER_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
 export interface OathweaveVerifierOptions extends EndpointOptions {
   /** Accepted issuer, or issuers. Each must be an https URL. */
   readonly issuer: string | readonly string[];
+  /**
+   * Oathweave's native issuer identifiers (its `JWT_ISSUER`, for example `hive-iam`) to accept
+   * as well. Oathweave signs client-credentials tokens with its native issuer unless the
+   * client's policy selects the browser issuer, and with the same keys, so these tokens are
+   * verified against the same `jwksUrl` or `keys`. Each must match
+   * `OATHWEAVE_NATIVE_ISSUER_PATTERN`. Defaults to none: a native issuer is never accepted
+   * unless it is listed here.
+   */
+  readonly nativeIssuers?: readonly string[];
+  /**
+   * Which principals a native issuer may sign for. Defaults to `service`: suite user tokens
+   * come from browser clients, which Oathweave always signs with the https issuer.
+   */
+  readonly nativeIssuerAccept?: AcceptPrincipal;
   /** This service's resource audience, for example `hivemem`. Matched exactly. */
   readonly audience: string;
   /** The issuer's JWKS endpoint. Required unless `keys` is given. */
@@ -61,8 +81,11 @@ export interface OathweaveVerifierOptions extends EndpointOptions {
   readonly accept?: AcceptPrincipal;
   /** Seconds of clock skew tolerated on `exp`, `nbf` and `iat`. Defaults to 30. */
   readonly clockToleranceSec?: number;
-  /** Largest `exp - iat` and token age in seconds. Defaults to 900. */
-  readonly maxLifetimeSec?: number;
+  /**
+   * Largest `exp - iat` and token age in seconds: one limit for every token, or one per
+   * principal kind (`{ user: 900, service: 300 }`). Each defaults to 900.
+   */
+  readonly maxLifetimeSec?: number | OathweaveLifetimeLimits;
   readonly fetch?: typeof fetch;
   /** Clock in epoch milliseconds. */
   readonly now?: () => number;
@@ -95,7 +118,10 @@ export interface VerifyOptions {
 }
 
 export interface OathweaveVerifier {
+  /** The accepted https issuers. */
   readonly issuers: readonly string[];
+  /** The accepted native issuer identifiers; empty unless configured. */
+  readonly nativeIssuers: readonly string[];
   readonly audience: string;
   verify(token: string, options?: VerifyOptions): Promise<OathweavePrincipal>;
   verifyUser(token: string): Promise<OathweaveUserPrincipal>;
@@ -170,18 +196,45 @@ interface SessionCheck {
   displayName: Promise<string>;
 }
 
+const ACCEPT_VALUES: readonly AcceptPrincipal[] = ['user', 'service', 'any'];
+
+/** Validate the configured native issuer identifiers. */
+function nativeIssuerList(value: readonly string[] | undefined): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new TypeError('Oathweave nativeIssuers must be an array');
+  for (const issuer of value as readonly unknown[]) {
+    if (typeof issuer !== 'string' || !OATHWEAVE_NATIVE_ISSUER_PATTERN.test(issuer)) {
+      throw new TypeError('Oathweave nativeIssuers entries must be lowercase identifiers such as hive-iam');
+    }
+  }
+  return [...new Set(value)];
+}
+
+/** Resolve `maxLifetimeSec` into one limit per principal kind. */
+function lifetimeLimits(value: number | OathweaveLifetimeLimits | undefined): Required<OathweaveLifetimeLimits> {
+  const limits = typeof value === 'object' && value !== null
+    ? { user: value.user ?? OATHWEAVE_MAX_LIFETIME_SEC, service: value.service ?? OATHWEAVE_MAX_LIFETIME_SEC }
+    : { user: value ?? OATHWEAVE_MAX_LIFETIME_SEC, service: value ?? OATHWEAVE_MAX_LIFETIME_SEC };
+  for (const limit of [limits.user, limits.service]) {
+    if (!(typeof limit === 'number' && limit > 0 && limit <= 86_400)) throw new TypeError('maxLifetimeSec must be 1-86400');
+  }
+  return limits;
+}
+
 /** Create a verifier. Throws a TypeError at startup when the configuration is unsafe. */
 export function createOathweaveVerifier(options: OathweaveVerifierOptions): OathweaveVerifier {
   const issuers = typeof options.issuer === 'string' ? [options.issuer] : [...options.issuer];
   if (!issuers.length) throw new TypeError('At least one Oathweave issuer is required');
   for (const issuer of issuers) assertOathweaveEndpoint(issuer, 'issuer', options);
+  const nativeIssuers = nativeIssuerList(options.nativeIssuers);
+  const nativeIssuerAccept = options.nativeIssuerAccept ?? 'service';
+  if (!ACCEPT_VALUES.includes(nativeIssuerAccept)) throw new TypeError("nativeIssuerAccept must be 'user', 'service' or 'any'");
   if (options.jwksUrl !== undefined) assertOathweaveEndpoint(options.jwksUrl, 'jwksUrl', options);
   if (options.userinfoUrl !== undefined) assertOathweaveEndpoint(options.userinfoUrl, 'userinfoUrl', options);
   if (typeof options.audience !== 'string' || !options.audience) throw new TypeError('Oathweave audience is required');
   const clockTolerance = options.clockToleranceSec ?? OATHWEAVE_DEFAULT_CLOCK_TOLERANCE_SEC;
-  const maxLifetimeSec = options.maxLifetimeSec ?? OATHWEAVE_MAX_LIFETIME_SEC;
+  const lifetimes = lifetimeLimits(options.maxLifetimeSec);
   if (!(clockTolerance >= 0 && clockTolerance <= 300)) throw new TypeError('clockToleranceSec must be 0-300');
-  if (!(maxLifetimeSec > 0 && maxLifetimeSec <= 86_400)) throw new TypeError('maxLifetimeSec must be 1-86400');
   const requireRoles = options.requireRoles ?? false;
   const clientIdClaim = options.clientIdClaim ?? 'either';
   if (typeof requireRoles !== 'boolean') throw new TypeError('requireRoles must be a boolean');
@@ -192,6 +245,7 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
   const request: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
   const now = options.now ?? Date.now;
   const keys = keySource(options, request, timeoutMs);
+  const acceptedIssuers = [...issuers, ...nativeIssuers];
   const sessionTtl = options.sessionCacheTtlMs ?? OATHWEAVE_SESSION_CACHE_TTL_MS;
   const sessionMax = options.sessionCacheMax ?? OATHWEAVE_SESSION_CACHE_MAX;
 
@@ -257,10 +311,11 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
     try {
       ({ payload } = await jwtVerify(token, keys, {
         algorithms: ['RS256'],
-        issuer: issuers,
+        issuer: acceptedIssuers,
         audience: options.audience,
         requiredClaims: ['sub', 'iat', 'exp', 'jti'],
-        maxTokenAge: maxLifetimeSec,
+        // The per-kind limit is checked on `exp - iat` below, which also bounds the age.
+        maxTokenAge: Math.max(lifetimes.user, lifetimes.service),
         clockTolerance,
         currentDate: new Date(now()),
       }));
@@ -272,10 +327,14 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
 
     const principal = principalFromClaims(payload, {
       accept: verifyOptions.accept ?? defaultAccept,
-      maxLifetimeSec,
+      maxLifetimeSec: lifetimes,
       requireRoles,
       clientIdClaim,
     });
+    // A native issuer signs only the principals it was configured for.
+    if (nativeIssuers.includes(principal.issuer) && nativeIssuerAccept !== 'any' && nativeIssuerAccept !== principal.kind) {
+      throw new OathweaveError('invalid_issuer');
+    }
     if (principal.kind === 'user' && options.userinfoUrl) {
       const displayName = await sessionCheck(token, principal.subject);
       return { ...principal, displayName, sessionChecked: true };
@@ -285,6 +344,7 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
 
   return {
     issuers,
+    nativeIssuers,
     audience: options.audience,
     verify,
     verifyUser: token => verify(token, { accept: 'user' }) as Promise<OathweaveUserPrincipal>,

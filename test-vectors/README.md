@@ -3,8 +3,8 @@
 `oathweave/vectors.json` holds a test JWKS and pre-signed Oathweave access tokens with the
 outcome every suite verifier must produce. `oathweave/jwks.json` is the same JWKS on its own.
 
-All tokens are synthetic: the issuer is `https://oathweave.example.test`, the audience is
-`conformance`, and the signing keys were discarded after generation. Evaluate them at the fixed
+All tokens are synthetic: the issuer is `https://oathweave.example.test`, the native issuer
+(`nativeIssuers`) is `conformance-iam`, the audience is `conformance`, and the signing keys were discarded after generation. Evaluate them at the fixed
 time in `now` (`2026-01-01T00:00:00Z`), because Oathweave tokens live at most fifteen minutes.
 
 | Vector | Expected |
@@ -21,7 +21,11 @@ time in `now` (`2026-01-01T00:00:00Z`), because Oathweave tokens live at most fi
 | `hs256-confusion` | 401 `algorithm_not_allowed` |
 | `lifetime-too-long` | 401 `invalid_lifetime` |
 | `user-without-session` | 401 `invalid_claims` |
+| `valid-native-service` | accept, service principal signed with the native issuer |
+| `unconfigured-native-issuer` | 401 `invalid_issuer` |
+| `native-service-lifetime-too-long` | 401 `invalid_lifetime` |
 
-Run them with `runOathweaveConformance()` from `@hivemagnus/hive-common/oathweave/conformance`.
+Configure the verifier under test with `nativeIssuers` from the file (the runner passes them as
+`ctx.nativeIssuers`). Run them with `runOathweaveConformance()` from `@hivemagnus/hive-common/oathweave/conformance`.
 Regenerate with `npm run vectors:generate` in the HiveCommon repository; that replaces every
 token and key, so it is a changelog-worthy change.
