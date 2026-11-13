@@ -53,3 +53,14 @@ export {
   type PermissionOptions,
 } from './links.js';
 export { watchStreamAuthorization, type StreamWatch, type StreamWatchOptions } from './stream.js';
+export {
+  createServiceTokenProvider,
+  isServiceTokenError,
+  SERVICE_TOKEN_EXPIRY_MARGIN_MS,
+  SERVICE_TOKEN_FAILURE_BACKOFF_MS,
+  SERVICE_TOKEN_REQUEST_TIMEOUT_MS,
+  ServiceTokenError,
+  type ServiceTokenFailure,
+  type ServiceTokenProvider,
+  type ServiceTokenProviderOptions,
+} from './service-token.js';
