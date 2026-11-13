@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createServer, type RequestListener, type Server } from 'node:http';
+import { createServer, request as httpRequest, type RequestListener, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { authenticate, handleHealth, hiveHandler, requestContextFor, sendError, sendJson } from '../src/node-http/index.js';
 import { getRequestContext } from '../src/context/index.js';
@@ -172,6 +172,33 @@ describe('helpers', () => {
       if (!await handleHealth(req, res, createHealth())) sendJson(res, 200, { handled: false });
     });
     expect(await (await fetch(`${base}/other`)).json()).toEqual({ handled: false });
+  });
+
+  it('treats a request target that is not a URL as a non-health request', async () => {
+    const logger = { error: vi.fn() };
+    const base = await serve(hiveHandler((_req, res) => { sendJson(res, 200, { handled: true }); }, { health: {}, logger }));
+    const { port } = new URL(base);
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({ host: '127.0.0.1', port, path: '//[' }, response => { response.resume(); resolve(response.statusCode ?? 0); });
+      request.on('error', reject);
+      request.end();
+    });
+    expect(status).toBe(200);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('closes the connection when the error envelope itself cannot be sent', async () => {
+    const logger = { error: () => { throw new Error('logger down'); } };
+    const base = await serve(hiveHandler(() => { throw new Error('x'); }, { logger }));
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      await expect(fetch(base)).rejects.toThrow();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('sendError uses the ambient context and logger', async () => {

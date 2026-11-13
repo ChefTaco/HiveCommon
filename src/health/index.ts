@@ -2,6 +2,7 @@
  * `/health/live` and `/health/ready` responses with named, time-limited dependency checks.
  * Framework-free: adapters in `/hono` and `/node-http` serve these.
  */
+import { redactText } from '../log/redact.js';
 
 export const HEALTH_PATHS = { live: '/health/live', ready: '/health/ready' } as const;
 
@@ -135,10 +136,18 @@ async function runCheck(check: HealthCheck, defaultTimeout: number, exposeErrors
     return { status: ok ? 'up' : 'down', critical, latencyMs, ...(ok ? {} : { error: 'failed' }), ...(details ? { details } : {}) };
   } catch (error) {
     const latencyMs = Math.max(0, now() - started);
-    const reason = error instanceof CheckTimeout ? 'timeout' : exposeErrors && error instanceof Error && error.message ? error.message.slice(0, 300) : 'failed';
+    const reason = error instanceof CheckTimeout ? 'timeout' : exposeErrors && error instanceof Error && error.message ? redactText(error.message).slice(0, 300) : 'failed';
     return { status: 'down', critical, latencyMs, error: reason };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function assertCheckNames(checks: readonly HealthCheck[]): void {
+  const names = new Set<string>();
+  for (const check of checks) {
+    if (!check.name || names.has(check.name)) throw new Error(`Health check names must be unique and non-empty: ${check.name}`);
+    names.add(check.name);
   }
 }
 
@@ -146,11 +155,7 @@ async function runCheck(check: HealthCheck, defaultTimeout: number, exposeErrors
 export async function readiness(options: HealthOptions<object> = {}): Promise<HealthResponse<ReadyBody>> {
   const now = options.now ?? (() => Date.now());
   const checks = options.checks ?? [];
-  const names = new Set<string>();
-  for (const check of checks) {
-    if (!check.name || names.has(check.name)) throw new Error(`Health check names must be unique and non-empty: ${check.name}`);
-    names.add(check.name);
-  }
+  assertCheckNames(checks);
   const reports = await Promise.all(checks.map(check => runCheck(check, options.timeoutMs ?? 2000, options.exposeErrors ?? false, now)));
   const byName: Record<string, CheckReport> = {};
   checks.forEach((check, index) => { byName[check.name] = reports[index] as CheckReport; });
@@ -199,6 +204,8 @@ export interface Health<L extends object = LiveBody> {
 /** Bind options once and serve both endpoints. */
 export function createHealth<L extends object = LiveBody>(options: HealthOptions<L> = {}): Health<L> {
   assertLiveBody(options.liveBody);
+  // Fail at startup, not on every readiness request.
+  assertCheckNames(options.checks ?? []);
   return {
     live: () => liveness(options),
     ready: () => readiness(options),

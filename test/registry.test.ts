@@ -129,6 +129,26 @@ describe('endpoints and trust', () => {
     expect(await registry.endpoint('missing')).toBeUndefined();
   });
 
+  it('resolves only endpoints the registry listed, never prototype members', async () => {
+    const { registry } = client(routes);
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(await registry.endpoint('emberpath', { name })).toBeUndefined();
+    }
+  });
+
+  it('refuses endpoint maps, dependencies and product lists that are not strings', async () => {
+    const bad = (body: unknown) => client({
+      [`${BASE}/v1/products/emberpath/connection`]: () => Response.json(body),
+      [`${BASE}/v1/products/emberpath`]: () => Response.json(body),
+      [`${BASE}/v1/installation`]: () => Response.json(body),
+    }).registry;
+    const invalid = { code: 'invalid_registry_response', status: 502 };
+    await expect(bad({ ...connection, internalEndpoints: { emberpath: { href: 'https://x.example.com' } } }).endpoint('emberpath')).rejects.toMatchObject(invalid);
+    await expect(bad({ ...connection, nativeApis: { model: 42 } }).connection('emberpath')).rejects.toMatchObject(invalid);
+    await expect(bad({ ...product, dependencies: [{ id: 'oathweave' }] }).product('emberpath')).rejects.toMatchObject(invalid);
+    await expect(bad({ schema: 1, id: 'inst', products: [1] }).installation()).rejects.toMatchObject(invalid);
+  });
+
   it('returns empty trust and handles the public view without internal endpoints', async () => {
     const { internalEndpoints: _i, inventoryHost: _h, ...publicConnection } = connection;
     const { registry } = client({ [`${BASE}/v1/products/emberpath/connection`]: () => Response.json(publicConnection) });
