@@ -6,6 +6,8 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
 Fixes from a review of every module. No export was removed or renamed.
 
 ### Added
@@ -215,7 +217,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.1.0...v0.2.0
