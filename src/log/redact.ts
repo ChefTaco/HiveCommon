@@ -12,6 +12,7 @@ const MAX_DEPTH = 10;
 const SENSITIVE_KEY_PARTS = [
   'authorization', 'cookie', 'password', 'passwd', 'passphrase', 'secret', 'token',
   'apikey', 'privatekey', 'accesskey', 'signingkey', 'credential', 'webhookurl', 'sessionid',
+  'jwt', 'bearer', 'signature',
 ];
 /** Keys that end in "key" but are not secret. */
 const NON_SECRET_KEYS = new Set(['publickey', 'idempotencykey', 'cachekey', 'sortkey', 'partitionkey', 'primarykey', 'foreignkey']);
@@ -29,18 +30,20 @@ const TEXT_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, REDACTED],
   // Authorization schemes.
   [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{4,}/gi, `$1 ${REDACTED}`],
-  // JWT / JWS compact serialisations (header.payload.signature, signature may be empty).
-  [/\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, REDACTED],
+  // JWT / JWS compact serialisations (header.payload.signature, signature may be empty). The
+  // header segment is bounded so text full of `eyJ…-eyJ…` runs cannot make matching quadratic.
+  [/\beyJ[A-Za-z0-9_-]{5,4096}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, REDACTED],
   // Provider key formats.
   [/\bsk-[A-Za-z0-9_-]{12,}/g, REDACTED],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, REDACTED],
   [/\bnpm_[A-Za-z0-9]{20,}\b/g, REDACTED],
   [/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, REDACTED],
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, REDACTED],
-  // Credentials in URLs.
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, `$1${REDACTED}@`],
+  // Credentials in URLs: any userinfo, including `scheme://:password@` and `scheme://token@`.
+  // Anchored on `://` (not on the scheme) so dotted text cannot make matching quadratic.
+  [/(:\/\/)[^\s/@?#]+@/g, `$1${REDACTED}@`],
   // Secret-looking query parameters and key=value / key: value pairs.
-  [/([?&](?:access_token|refresh_token|id_token|token|code|client_secret|api_key|apikey|key|password|sig|signature)=)[^&#\s]+/gi, `$1${REDACTED}`],
+  [/([?&](?:access_token|refresh_token|id_token|token|code|client_secret|secret|client_assertion|assertion|jwt|api_key|apikey|key|password|sig|signature)=)[^&#\s]+/gi, `$1${REDACTED}`],
   [/\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password|passwd|private[_-]?key)["']?\s*[:=]\s*["']?)[^"',\s}&]+/gi, `$1${REDACTED}`],
 ];
 

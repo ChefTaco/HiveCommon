@@ -24,6 +24,9 @@ describe('redactText', () => {
     ['AWS key', awsKey, REDACTED],
     ['private key', `x ${pem} y`, `x ${REDACTED} y`],
     ['URL credentials', 'https://user:pa55@db.example.com/x', `https://${REDACTED}@db.example.com/x`],
+    ['URL password without a user', 'redis://:pa55@cache.example.com:6379', `redis://${REDACTED}@cache.example.com:6379`],
+    ['URL token userinfo', 'https://fixture-token@git.example.com/repo', `https://${REDACTED}@git.example.com/repo`],
+    ['query secret', 'GET /cb?secret=abc123&jwt=zzz', `secret=${REDACTED}&jwt=${REDACTED}`],
     ['query token', 'GET /cb?code=abc123&state=s&access_token=zzz', `code=${REDACTED}&state=s&access_token=${REDACTED}`],
     ['assignment', 'password=hunter2 user=bob', `password=${REDACTED} user=bob`],
     ['json-ish assignment', '{"client_secret": "abc"}', `"client_secret": "${REDACTED}"`],
@@ -34,6 +37,17 @@ describe('redactText', () => {
 
   it('leaves ordinary text alone', () => {
     expect(redactText('Agent finished 3 tasks for project alpha')).toBe('Agent finished 3 tasks for project alpha');
+    // An @ after the authority is not userinfo.
+    for (const text of ['https://example.com/users/a@example.com', 'https://example.com?email=a@example.com', 'https://example.com#a@b']) {
+      expect(redactText(text)).toBe(text);
+    }
+  });
+
+  it('stays fast on adversarial text', () => {
+    const started = performance.now();
+    for (const unit of ['a.', 'eyJaaaaa-', '://a', 'token  ']) redactText(unit.repeat(Math.ceil(100_000 / unit.length)));
+    // Quadratic matching took several seconds here; linear matching takes a few milliseconds.
+    expect(performance.now() - started).toBeLessThan(2_000);
   });
 });
 
@@ -84,7 +98,7 @@ describe('redact', () => {
   });
 
   it('classifies keys', () => {
-    for (const key of ['Authorization', 'x-api-key', 'refresh_token', 'privateKey', 'key', 'session_id', 'AWS_SECRET_ACCESS_KEY', 'credentials']) {
+    for (const key of ['Authorization', 'x-api-key', 'refresh_token', 'privateKey', 'key', 'session_id', 'AWS_SECRET_ACCESS_KEY', 'credentials', 'jwt', 'bearer', 'x-hub-signature']) {
       expect(isSensitiveKey(key)).toBe(true);
     }
     for (const key of ['name', 'publicKey', 'idempotency-key', 'keys', 'kid', 'id']) expect(isSensitiveKey(key)).toBe(false);
