@@ -45,8 +45,8 @@ export interface OathweaveServicePrincipal extends PrincipalBase {
 
 export type OathweavePrincipal = OathweaveUserPrincipal | OathweaveServicePrincipal;
 
-/** Mirrors `OATHWEAVE_MAX_LIFETIME_SEC`, which lives in the verifier module. */
-const MAX_LIFETIME_SEC = 900;
+/** Oathweave access tokens live at most fifteen minutes. */
+export const OATHWEAVE_MAX_LIFETIME_SEC = 900;
 
 function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === 'string');
@@ -134,7 +134,7 @@ export function principalFromClaims(payload: JWTPayload, policy: ClaimPolicy): O
   const { iat, exp, sub, jti, iss } = payload;
   const clientIdClaim = policy.clientIdClaim ?? 'either';
   const kind = principalKindOf(payload, clientIdClaim);
-  const maxLifetimeSec = typeof policy.maxLifetimeSec === 'number' ? policy.maxLifetimeSec : policy.maxLifetimeSec[kind] ?? MAX_LIFETIME_SEC;
+  const maxLifetimeSec = typeof policy.maxLifetimeSec === 'number' ? policy.maxLifetimeSec : policy.maxLifetimeSec[kind] ?? OATHWEAVE_MAX_LIFETIME_SEC;
   if (typeof iat !== 'number' || typeof exp !== 'number' || exp <= iat || exp - iat > maxLifetimeSec) {
     throw new OathweaveError('invalid_lifetime');
   }

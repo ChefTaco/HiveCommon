@@ -41,7 +41,9 @@ export function watchStreamAuthorization(options: StreamWatchOptions): StreamWat
   const interval = setInterval(() => {
     if (inFlight || stopped) return;
     inFlight = true;
-    options.recheck().then(
+    // Through a promise, so a recheck that throws synchronously ends the stream like a rejection
+    // instead of escaping the timer as an uncaught exception.
+    Promise.resolve().then(() => options.recheck()).then(
       () => { inFlight = false; },
       (error: unknown) => {
         inFlight = false;

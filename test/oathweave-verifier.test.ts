@@ -53,6 +53,29 @@ describe('configuration', () => {
     expect(() => verifier({ clientIdClaim: 'client' as never })).toThrow(/clientIdClaim/);
   });
 
+  it('refuses unsafe accept, timeout and session cache settings', () => {
+    expect(() => verifier({ accept: 'users' as never })).toThrow(/accept must be/);
+    for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) expect(() => verifier({ requestTimeoutMs: value })).toThrow(/requestTimeoutMs/);
+    // An infinite TTL would keep a signed-out session alive for the life of the process.
+    for (const value of [-1, Number.NaN, Number.POSITIVE_INFINITY]) expect(() => verifier({ sessionCacheTtlMs: value })).toThrow(/sessionCacheTtlMs/);
+    for (const value of [0, -1, 1.5, Number.NaN]) expect(() => verifier({ sessionCacheMax: value })).toThrow(/sessionCacheMax/);
+    expect(() => verifier({ sessionCacheTtlMs: 0, sessionCacheMax: 1, requestTimeoutMs: 1 })).not.toThrow();
+  });
+
+  it('keeps its audience and userinfo endpoint when the options object changes later', async () => {
+    const stub = stubFetch({ [USERINFO_URL]: () => Response.json({ sub: 'user-subject' }) });
+    const options: { -readonly [K in keyof OathweaveVerifierOptions]: OathweaveVerifierOptions[K] } = {
+      issuer: ISSUER, audience: AUDIENCE, keys: keys.jwks, now: () => NOW_MS, userinfoUrl: USERINFO_URL, fetch: stub.fetch,
+    };
+    const instance = createOathweaveVerifier(options);
+    options.audience = 'another';
+    options.userinfoUrl = 'http://attacker.example.test/userinfo';
+    const principal = await instance.verify(await mint(keys, userClaims()));
+    expect(principal).toMatchObject({ kind: 'user', sessionChecked: true });
+    expect(stub.calls.map(call => call.url)).toEqual([USERINFO_URL]);
+    expect(await reason(instance.verify(await mint(keys, userClaims(), { aud: 'another' })))).toBe('invalid_audience');
+  });
+
   it('allows loopback http only when explicitly enabled', () => {
     expect(() => verifier({ issuer: 'http://127.0.0.1:9000' })).toThrow();
     expect(() => verifier({ issuer: 'http://127.0.0.1:9000', allowInsecureLoopback: true })).not.toThrow();
