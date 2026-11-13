@@ -27,6 +27,9 @@ export interface HiveEventFeedResult extends HiveEventFeedProgress {
   caughtUp: boolean;
 }
 
+/** The page size limit applied when `maxPageBytes` is not given: 6 MiB. */
+export const DEFAULT_MAX_PAGE_BYTES = 6 * 1024 * 1024;
+
 export type HiveEventFeedFailure =
   | 'aborted' // `signal` aborted (a caller's deadline, usually)
   | 'network' // the request itself failed
@@ -69,7 +72,11 @@ export interface ReadHiveEventFeedOptions {
   readonly product?: string | undefined;
   /** A further filter on valid events: return false to count one as dropped. */
   readonly accept?: (event: HiveEvent) => boolean;
-  /** Refuse a page larger than this many bytes as `malformed`. Unset: the page is read whole. */
+  /**
+   * Refuse a page larger than this many bytes as `malformed`. Default `DEFAULT_MAX_PAGE_BYTES`
+   * (6 MiB): a valid 200-event page is at most about 3 MB, so only a misbehaving feed reaches it.
+   * `Infinity` reads the page whole.
+   */
   readonly maxPageBytes?: number | undefined;
   /** Extra request headers. `accept: application/json` is sent unless given here. */
   readonly headers?: Readonly<Record<string, string>>;
@@ -97,6 +104,8 @@ function pageUrl(url: string, cursor: string | null, limit: number): string {
 export async function readHiveEventFeed(request: HiveEventFeedFetch, url: string, options: ReadHiveEventFeedOptions = {}): Promise<HiveEventFeedResult> {
   const limit = options.limit ?? 200;
   const maxPages = options.maxPages ?? 10;
+  const maxPageBytes = options.maxPageBytes ?? DEFAULT_MAX_PAGE_BYTES;
+  if (!(maxPageBytes > 0)) throw new RangeError('maxPageBytes must be a positive number');
   if (!Number.isInteger(limit) || limit < 1) throw new RangeError('limit must be a positive integer');
   if (!Number.isInteger(maxPages) || maxPages < 1) throw new RangeError('maxPages must be a positive integer');
   const progress: HiveEventFeedProgress = options.progress ?? { events: [], cursor: options.after || null, dropped: 0 };
@@ -121,9 +130,9 @@ export async function readHiveEventFeed(request: HiveEventFeedFetch, url: string
     }
     let body: unknown;
     try {
-      body = options.maxPageBytes === undefined
+      body = maxPageBytes === Infinity
         ? await response.json() as unknown
-        : await readJsonBounded(response, options.maxPageBytes, signal ? { signal } : {});
+        : await readJsonBounded(response, maxPageBytes, signal ? { signal } : {});
     } catch (cause) {
       throw fail('malformed', cause instanceof BoundedFetchError ? {} : { cause });
     }

@@ -445,7 +445,7 @@ try {
 It asks for `?after=<cursor>&limit=200` page by page until `nextCursor` is null or `maxPages`
 (10) pages were read. Each event is validated on its own, so one bad event is dropped and
 counted, not the page; with `product` set, an event that claims another product is dropped too.
-`kind` is `aborted`, `network`, `status` or `malformed`. `maxPageBytes` bounds a page.
+`kind` is `aborted`, `network`, `status` or `malformed`. `maxPageBytes` bounds a page; it defaults to 6 MiB (`DEFAULT_MAX_PAGE_BYTES`), and `Infinity` removes the bound.
 
 ### fetch
 
