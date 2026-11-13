@@ -57,6 +57,14 @@ export function redactText(value: string): string {
 export interface RedactOptions {
   /** Extra keys to mask, compared case-insensitively and exactly. */
   readonly keys?: readonly string[];
+  /**
+   * Keys that are never masked for their name, compared case-insensitively and exactly: for
+   * identifiers whose name merely contains a secret-looking word (`authorizationId`,
+   * `tokenCount`, `credentialType`). Their values are still traversed and scrubbed with
+   * `redactText()`, so a credential stored under an allowed key is masked all the same. A key
+   * listed in both `keys` and `allowKeys` is masked.
+   */
+  readonly allowKeys?: readonly string[];
 }
 
 /**
@@ -67,6 +75,7 @@ export interface RedactOptions {
  */
 export function redact<T>(value: T, options: RedactOptions = {}): T {
   const extra = new Set((options.keys ?? []).map(key => key.toLowerCase()));
+  const allowed = new Set((options.allowKeys ?? []).map(key => key.toLowerCase()));
   const seen = new WeakSet<object>();
   const visit = (item: unknown, depth: number): unknown => {
     if (typeof item === 'string') return redactText(item);
@@ -94,7 +103,8 @@ export function redact<T>(value: T, options: RedactOptions = {}): T {
       if (Array.isArray(item)) return item.map(element => visit(element, depth + 1));
       const result: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(item)) {
-        const sensitive = isSensitiveKey(key) || extra.has(key.toLowerCase());
+        const lower = key.toLowerCase();
+        const sensitive = extra.has(lower) || (!allowed.has(lower) && isSensitiveKey(key));
         result[key] = sensitive && (typeof child === 'string' || (typeof child === 'object' && child !== null))
           ? REDACTED
           : visit(child, depth + 1);

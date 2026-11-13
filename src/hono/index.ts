@@ -25,6 +25,13 @@ import type { AcceptPrincipal, OathweavePrincipal } from '../oathweave/claims.js
 import { OathweaveError } from '../oathweave/errors.js';
 import { hasAnyRole, hasScopes, requirePermissions, type PermissionOptions } from '../oathweave/links.js';
 import type { OathweaveVerifier } from '../oathweave/verifier.js';
+import { readStreamBounded } from '../fetch/index.js';
+import {
+  bodyError, checkContentTypeFirst, declaredLength, maxBodyBytes, parseJsonBody,
+  type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions,
+} from '../internal/body.js';
+
+export { DEFAULT_MAX_BODY_BYTES, type BodyProblem, type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions } from '../internal/body.js';
 
 /** Context variables set by these middlewares. Use `new Hono<HiveEnv>()` or extend it. */
 export interface HiveVariables {
@@ -161,4 +168,105 @@ export function registerHealthRoutes<E extends Env, L extends object = LiveBody>
   };
   for (const path of health.paths.live) app.get(path, serve('live'));
   for (const path of health.paths.ready) app.get(path, serve('ready'));
+}
+
+// ---------------------------------------------------------------------------------------
+// Request bodies
+
+function rawRequest(source: Context | Request): Request {
+  return source instanceof Request ? source : source.req.raw;
+}
+
+/**
+ * The request body as bytes, at most `maxBytes` (1 MiB), from a Hono context or a fetch
+ * `Request`. The limit is enforced while streaming, so it holds without a `content-length` and
+ * against a wrong one; a declared length over the limit is refused before anything is read, and
+ * the rest of an oversized body is cancelled, never buffered. Throws a `HiveError`: 413
+ * `too_large`, or 400 `request_aborted` when the body stream fails. The body can be read once:
+ * do not combine it with `c.req.json()`.
+ */
+export async function readBody(source: Context | Request, options: ReadBodyLimits = {}): Promise<Uint8Array> {
+  const maxBytes = maxBodyBytes(options);
+  const request = rawRequest(source);
+  const declared = declaredLength(request.headers.get('content-length'));
+  if (declared !== undefined && declared > maxBytes) {
+    void request.body?.cancel().catch(() => undefined);
+    throw bodyError('too_large', options, { maxBytes });
+  }
+  if (!request.body) return new Uint8Array();
+  const tooLarge = bodyError('too_large', options, { maxBytes });
+  try {
+    return await readStreamBounded(request.body, maxBytes, () => tooLarge);
+  } catch (error) {
+    if (error === tooLarge) throw error;
+    throw bodyError('aborted', options);
+  }
+}
+
+/**
+ * Read and parse a JSON request body within `maxBytes`, from a Hono context or a fetch
+ * `Request`. Throws a `HiveError`: 413 `too_large`, 415 `unsupported_media_type` (by default
+ * only when there is a body; see `requireContentType`), 400 `invalid_json` for a body that does
+ * not parse or is empty (unless `emptyValue` is set). Returns the parsed `value` with the raw
+ * `text`.
+ */
+export async function readJsonBody(source: Context | Request, options: ReadJsonBodyOptions = {}): Promise<JsonBody> {
+  const request = rawRequest(source);
+  const contentType = request.headers.get('content-type');
+  checkContentTypeFirst(contentType, options);
+  return parseJsonBody(await readBody(request, options), contentType, options);
+}
+
+// ---------------------------------------------------------------------------------------
+// Security headers
+
+export interface SecurityHeadersOptions {
+  /** `X-Content-Type-Options`. `nosniff`; false omits it. */
+  readonly contentTypeOptions?: string | false;
+  /** `Referrer-Policy`. `no-referrer`; false omits it. */
+  readonly referrerPolicy?: string | false;
+  /** `X-Frame-Options`. `DENY`; false omits it. */
+  readonly frameOptions?: string | false;
+  /**
+   * More headers, such as `Content-Security-Policy` or `Permissions-Policy`: a record, or a
+   * function of the context for values that depend on the request. A false or undefined value
+   * omits that header; a name given here replaces the same default.
+   */
+  readonly headers?: SecurityHeaderMap | ((c: Context) => SecurityHeaderMap);
+  /**
+   * When the headers are set. `before` (the default) sets them before the handler runs, so a
+   * handler can still change one for its own response. `after` sets them once the handler is
+   * done, replacing whatever it set.
+   */
+  readonly apply?: 'before' | 'after';
+}
+
+export type SecurityHeaderMap = Readonly<Record<string, string | false | undefined>>;
+
+/**
+ * Set the baseline response headers every suite API sends: `X-Content-Type-Options: nosniff`,
+ * `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`. Register it first, so error and
+ * not-found responses carry them too.
+ */
+export function securityHeaders(options: SecurityHeadersOptions = {}): MiddlewareHandler {
+  const base: Record<string, string | false | undefined> = {
+    'X-Content-Type-Options': options.contentTypeOptions ?? 'nosniff',
+    'Referrer-Policy': options.referrerPolicy ?? 'no-referrer',
+    'X-Frame-Options': options.frameOptions ?? 'DENY',
+  };
+  const set = (c: Context): void => {
+    const extra = typeof options.headers === 'function' ? options.headers(c) : options.headers ?? {};
+    const merged = new Map<string, readonly [name: string, value: string | false | undefined]>();
+    for (const [name, value] of [...Object.entries(base), ...Object.entries(extra)]) merged.set(name.toLowerCase(), [name, value]);
+    for (const [name, value] of merged.values()) if (typeof value === 'string' && value) c.header(name, value);
+  };
+  return async (c, next) => {
+    if (options.apply === 'after') {
+      await next();
+      set(c);
+    } else {
+      set(c);
+      await next();
+    }
+  };
 }

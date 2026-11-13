@@ -87,6 +87,15 @@ export interface HealthOptions<L extends object = LiveBody> {
    * unchanged, and liveness still never runs checks. Readiness is not affected.
    */
   readonly liveBody?: LiveBodyOverride<L>;
+  /**
+   * For `createHealth()` (and so the adapters): share readiness runs. Unset, every readiness
+   * request runs every check, as before. `0` shares a run only between requests that arrive
+   * while it is in progress. A positive number also serves the finished result (its `time` and
+   * latencies included) for that many milliseconds. Readiness is often reachable without
+   * authentication, so this bounds how hard a caller can make the service probe its
+   * dependencies. The stand-alone `readiness()` function never shares.
+   */
+  readonly readyCacheMs?: number;
 }
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } as const;
@@ -206,13 +215,32 @@ export function createHealth<L extends object = LiveBody>(options: HealthOptions
   assertLiveBody(options.liveBody);
   // Fail at startup, not on every readiness request.
   assertCheckNames(options.checks ?? []);
+  const cacheMs = options.readyCacheMs;
+  if (cacheMs !== undefined && (typeof cacheMs !== 'number' || !Number.isFinite(cacheMs) || cacheMs < 0)) {
+    throw new TypeError('readyCacheMs must be a non-negative number');
+  }
+  const now = options.now ?? (() => Date.now());
+  let running: Promise<HealthResponse<ReadyBody>> | undefined;
+  let finished: { readonly response: HealthResponse<ReadyBody>; readonly until: number } | undefined;
+  const ready = (): Promise<HealthResponse<ReadyBody>> => {
+    if (cacheMs === undefined) return readiness(options);
+    if (finished && now() < finished.until) return Promise.resolve(finished.response);
+    finished = undefined;
+    running ??= readiness(options)
+      .then(response => {
+        if (cacheMs > 0) finished = { response, until: now() + cacheMs };
+        return response;
+      })
+      .finally(() => { running = undefined; });
+    return running;
+  };
   return {
     live: () => liveness(options),
-    ready: () => readiness(options),
+    ready,
     handle(pathname) {
       const kind = resolveHealthPath(pathname, options.aliases);
       if (kind === 'live') return Promise.resolve(liveness(options));
-      if (kind === 'ready') return readiness(options);
+      if (kind === 'ready') return ready();
       return undefined;
     },
     paths: healthPaths(options.aliases),

@@ -20,8 +20,8 @@ npm run verify
 
 - Keep TypeScript strict and follow the style of the surrounding code. See [AGENTS.md](AGENTS.md).
 - Add or update tests for behaviour changes; security fixes need a regression test.
-- `/contracts` and `/errors` must stay isomorphic: no Node built-ins, no runtime dependencies.
-  A test enforces this.
+- `/contracts`, `/errors`, `/fetch` and `/feed` must stay isomorphic: no Node built-ins, no
+  runtime dependencies. A test enforces this.
 - Changing verifier behaviour means checking the conformance vectors. Regenerate them only on
   purpose (`npm run vectors:generate`), and say so in the changelog: every product runs them.
 - Never commit `.env` files, keys, certificates or details of private infrastructure.

@@ -34,7 +34,8 @@ notes, or real user data, in code, tests, fixtures, docs, or commit messages:
   in their own tests. Add vectors freely; change an expected outcome only with a changelog entry
   that says why, and regenerate (`npm run vectors:generate`) only on purpose.
 - **`/contracts` and `/errors` are isomorphic.** No Node built-ins, no runtime dependencies,
-  nothing but each other. The browser UI vendors them. A test enforces this.
+  nothing but each other. The browser UI vendors them. A test enforces this. `/fetch` and `/feed`
+  are isomorphic too and may import only the isomorphic modules.
 - **No secrets in output.** Error messages are fixed or sanitised and never echo tokens, webhook
   URLs or upstream bodies. Log lines go through `redact()`. Health checks hide error text unless
   `exposeErrors` is set.

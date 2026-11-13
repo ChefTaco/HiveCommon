@@ -37,6 +37,8 @@ export interface LoggerOptions {
   readonly redact?: boolean;
   /** Extra keys to redact. */
   readonly redactKeys?: readonly string[];
+  /** Keys never masked for their name (see `RedactOptions.allowKeys`); their values are still scrubbed. */
+  readonly redactAllowKeys?: readonly string[];
   /** Include `err.stack` for Error fields. Off by default. */
   readonly stacks?: boolean;
   readonly now?: () => number;
@@ -94,7 +96,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     };
     // Reserved fields win over bindings so a caller cannot forge them.
     const entry = {
-      ...(shouldRedact ? redact(merged, { keys: options.redactKeys ?? [] }) : merged),
+      ...(shouldRedact ? redact(merged, { keys: options.redactKeys ?? [], ...(options.redactAllowKeys ? { allowKeys: options.redactAllowKeys } : {}) }) : merged),
       time: new Date(now()).toISOString(),
       level: entryLevel,
       msg: shouldRedact ? redact(message) : message,

@@ -12,6 +12,40 @@ Fixes from a review of every module. No export was removed or renamed.
 
 - `/contracts`: `REQUEST_ID_PATTERN` and `isValidRequestId()`, moved from `/context` (which still
   exports both) so the isomorphic modules can use them.
+- Shared helpers that several products each carried a copy of. All are additive: no existing
+  export changed behaviour.
+  - `/oathweave`: `createServiceTokenProvider()`, a `client_credentials` token source with a
+    cache, background refresh before expiry, one shared request for concurrent callers, backoff
+    after a failure, `invalidate()`, and an expiry lowered to the token's own `exp`. Failures are
+    a `ServiceTokenError` (a 503 `HiveError` with a `reason`) that never holds the secret, a
+    token or the endpoint's response.
+  - `/fetch` (new, isomorphic): `boundedFetch()`, `fetchJson()`, `readBodyBounded()`,
+    `readTextBounded()`, `readJsonBounded()`, `parseJsonBytes()` and `BoundedFetchError`: outbound
+    requests with a deadline combined with the caller's signal, `redirect: 'error'` by default, a
+    response-size limit enforced while streaming, and opt-in request-ID and trace forwarding
+    (`contextHeaders: outboundHeaders`).
+  - `/hono` and `/node-http`: `readJsonBody()` and `readBody()`, which enforce a body-size limit
+    while streaming (with or without `content-length`) and throw 413 `too_large`, 415
+    `unsupported_media_type` or 400 `invalid_json`. In `/node-http` an oversized upload is
+    answered and then drained, and `drainRequest()` does the same for other early refusals.
+  - `/log`: `redact(value, { allowKeys })` and the logger's `redactAllowKeys`, for identifiers
+    such as `authorizationId` whose name contains a secret-looking word. Their values are still
+    scrubbed as text. Default masking is unchanged.
+  - `/secrets` (new, Node): `timingSafeEqualString()`, `sha256Hex()`, `matchesSha256Digest()`,
+    `readBearerToken()` and `bearerMatchesSha256Digest()`.
+  - `/events`: `encodeFeedPosition()`, `decodeFeedPosition()`, `requireFeedPosition()`,
+    `feedSince()` and `buildFeedPage()` for feeds ordered by `(occurredAt, id)`.
+  - `/feed` (new, isomorphic): `readHiveEventFeed()`, a paging feed consumer that validates each
+    event on its own, and `HiveEventFeedError`.
+  - `/contracts`: `generateRequestId()` (now with a fallback where `crypto.randomUUID` is
+    missing), `readRequestId()`, `resolveRequestId()`, `readHeader()`, `rawHeader()` and
+    `HeaderSource`, moved from `/context` (which still exports them) so a browser can use them;
+    `retryAfterMs()`; `FeedPosition`, `compareFeedPositions()` and `isAfterFeedPosition()`.
+  - `/health`: `readyCacheMs`, so concurrent readiness requests share one run of the checks
+    (`0`) and a finished result can be served for a short time (a positive number). Unset, the
+    behaviour is unchanged.
+  - `/hono`: `securityHeaders()` middleware (`nosniff`, `no-referrer`, frame `DENY`, with
+    options to change, omit and add headers).
 
 ### Fixed
 

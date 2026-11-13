@@ -198,13 +198,20 @@ describe('parseHiveError legacy shapes', () => {
 });
 
 describe('isomorphism', () => {
-  it('errors and contracts import no Node built-ins', () => {
-    for (const file of ['../src/errors/index.ts', '../src/contracts/index.ts']) {
-      const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+  it('the isomorphic modules import no Node built-ins and only each other', () => {
+    const isomorphic = ['errors', 'contracts', 'fetch', 'feed'];
+    for (const name of isomorphic) {
+      const source = readFileSync(new URL(`../src/${name}/index.ts`, import.meta.url), 'utf8');
       expect(source).not.toMatch(/from ['"](?:node:|fs|path|crypto|http|https|os|async_hooks)/);
       expect(source).not.toMatch(/\bprocess\.|\bBuffer\b/);
       const imports = [...source.matchAll(/from ['"]([^'"]+)['"]/g)].map(match => match[1]);
-      expect(imports.every(path => path?.startsWith('../contracts/'))).toBe(true);
+      expect(imports.every(path => isomorphic.some(other => path === `../${other}/index.js`))).toBe(true);
+    }
+    // The two the browser UI vendors stay self-contained.
+    for (const name of ['errors', 'contracts']) {
+      const source = readFileSync(new URL(`../src/${name}/index.ts`, import.meta.url), 'utf8');
+      const imports = [...source.matchAll(/from ['"]([^'"]+)['"]/g)].map(match => match[1]);
+      expect(imports.every(path => path === '../contracts/index.js')).toBe(true);
     }
   });
 });

@@ -21,6 +21,12 @@ import type { Logger } from '../log/index.js';
 import type { OathweavePrincipal } from '../oathweave/claims.js';
 import type { OathweaveVerifier, VerifyOptions } from '../oathweave/verifier.js';
 import { OathweaveError } from '../oathweave/errors.js';
+import {
+  bodyError, checkContentTypeFirst, declaredLength, maxBodyBytes, parseJsonBody,
+  type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions,
+} from '../internal/body.js';
+
+export { DEFAULT_MAX_BODY_BYTES, type BodyProblem, type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions } from '../internal/body.js';
 
 /** The request context for `req`, created on first use and cached on the request. */
 const contexts = new WeakMap<IncomingMessage, RequestContext>();
@@ -58,6 +64,124 @@ export function sendJson(res: ServerResponse, status: number, body: unknown, hea
     ...headers,
   });
   res.end(res.req?.method === 'HEAD' ? undefined : payload);
+}
+
+// ---------------------------------------------------------------------------------------
+// Request bodies
+
+export interface DrainOptions {
+  /**
+   * How long to keep discarding a body the client is still sending before the connection is
+   * closed. 5000 ms; `0` closes it at once (the client may then see a reset, not the response).
+   */
+  readonly lingerMs?: number;
+}
+
+export const DEFAULT_DRAIN_LINGER_MS = 5_000;
+
+/**
+ * Discard the rest of a request body so the response already sent (or about to be) reaches a
+ * client that is still uploading: a server that stops reading leaves that client blocked on its
+ * write, and it sees a stalled or reset connection instead of the answer. Use it after refusing
+ * a request without reading its body (401, 404, 413, 415). The upload is not waited for: if it
+ * has not ended after `lingerMs`, the request is destroyed.
+ */
+export function drainRequest(req: IncomingMessage, options: DrainOptions = {}): void {
+  if (req.destroyed || req.complete) return;
+  const lingerMs = options.lingerMs ?? DEFAULT_DRAIN_LINGER_MS;
+  if (!(lingerMs > 0)) {
+    req.destroy();
+    return;
+  }
+  const timer = setTimeout(() => { req.destroy(); }, lingerMs);
+  timer.unref();
+  const done = (): void => { clearTimeout(timer); };
+  req.once('end', done);
+  req.once('close', done);
+  // Nothing is listening for the body any more; without a handler a late socket error would throw.
+  req.on('error', () => undefined);
+  req.resume();
+}
+
+export interface NodeReadBodyOptions extends ReadBodyLimits, DrainOptions {}
+
+/**
+ * The request body as bytes, at most `maxBytes` (1 MiB). The limit is enforced while streaming,
+ * so it holds without a `content-length` and against a wrong one; a declared length over the
+ * limit is refused before anything is read. An oversized body is answered and then drained: the
+ * 413 is thrown at once, so the handler can respond while the client is still uploading, and
+ * the rest of the upload is discarded in the background for up to `lingerMs` (see
+ * `drainRequest()`). Throws a `HiveError`: 413 `too_large`, or 400 `request_aborted` when the
+ * client went away mid-body.
+ */
+export function readBody(req: IncomingMessage, options: NodeReadBodyOptions = {}): Promise<Buffer> {
+  const maxBytes = maxBodyBytes(options);
+  const declared = declaredLength(req.headers['content-length']);
+  if (declared !== undefined && declared > maxBytes) {
+    drainRequest(req, options);
+    return Promise.reject(bodyError('too_large', options, { maxBytes }));
+  }
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const cleanup = (): void => {
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onGone);
+      req.off('close', onGone);
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      size += buffer.length;
+      if (size > maxBytes) {
+        cleanup();
+        chunks.length = 0;
+        drainRequest(req, options);
+        reject(bodyError('too_large', options, { maxBytes }));
+      } else chunks.push(buffer);
+    };
+    const onEnd = (): void => {
+      cleanup();
+      resolve(Buffer.concat(chunks));
+    };
+    // An error, or 'close' without 'end': the client went away before the body was complete.
+    const onGone = (): void => {
+      cleanup();
+      reject(bodyError('aborted', options));
+    };
+    if (req.readableEnded) {
+      resolve(Buffer.alloc(0));
+      return;
+    }
+    if (req.destroyed) {
+      reject(bodyError('aborted', options));
+      return;
+    }
+    req.on('data', onData);
+    req.once('end', onEnd);
+    req.once('error', onGone);
+    req.once('close', onGone);
+  });
+}
+
+export interface NodeReadJsonBodyOptions extends ReadJsonBodyOptions, DrainOptions {}
+
+/**
+ * Read and parse a JSON request body within `maxBytes` (see `readBody()` for the limit and the
+ * answer-then-drain behaviour). Throws a `HiveError`: 413 `too_large`, 415
+ * `unsupported_media_type` (by default only when there is a body; see `requireContentType`),
+ * 400 `invalid_json` for a body that does not parse or is empty (unless `emptyValue` is set).
+ * Returns the parsed `value` with the raw `text`.
+ */
+export async function readJsonBody(req: IncomingMessage, options: NodeReadJsonBodyOptions = {}): Promise<JsonBody> {
+  const contentType = req.headers['content-type'];
+  try {
+    checkContentTypeFirst(contentType, options);
+  } catch (error) {
+    drainRequest(req, options);
+    throw error;
+  }
+  return parseJsonBody(await readBody(req, options), contentType, options);
 }
 
 export interface SendErrorOptions {

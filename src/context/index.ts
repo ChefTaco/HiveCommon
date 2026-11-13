@@ -3,57 +3,14 @@
  * AsyncLocalStorage-scoped context that loggers and outbound clients read.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { HIVE_HEADERS, isValidRequestId } from '../contracts/index.js';
+import { generateRequestId, HIVE_HEADERS, rawHeader, readHeader, readRequestId, type HeaderSource } from '../contracts/index.js';
 import { HiveError } from '../errors/index.js';
 
-export { HIVE_HEADERS, isValidRequestId, REQUEST_ID_PATTERN } from '../contracts/index.js';
-
-/** Anything headers can be read from: fetch `Headers`, a Node `IncomingHttpHeaders` record, or a getter. */
-export type HeaderSource =
-  | { get(name: string): string | null | undefined }
-  | Readonly<Record<string, string | readonly string[] | undefined>>
-  | ((name: string) => string | null | undefined);
-
-function rawHeader(headers: HeaderSource, name: string): unknown {
-  const lower = name.toLowerCase();
-  if (typeof headers === 'function') return headers(lower);
-  if (typeof (headers as { get?: unknown }).get === 'function') return (headers as { get(name: string): unknown }).get(lower);
-  const record = headers as Readonly<Record<string, unknown>>;
-  if (record[lower] !== undefined) return record[lower];
-  const key = Object.keys(record).find(candidate => candidate.toLowerCase() === lower);
-  return key === undefined ? undefined : record[key];
-}
-
-/** Read one header. A repeated header (array value) is treated as absent: it is ambiguous. */
-export function readHeader(headers: HeaderSource, name: string): string | undefined {
-  const value = rawHeader(headers, name);
-  if (Array.isArray(value)) return value.length === 1 && typeof value[0] === 'string' ? value[0] : undefined;
-  return typeof value === 'string' ? value : undefined;
-}
-
-// ---------------------------------------------------------------------------------------
-// Request IDs
-
-export function generateRequestId(): string {
-  return globalThis.crypto.randomUUID();
-}
-
-/**
- * The inbound request ID: `x-request-id`, else `x-hive-request-id`, else `x-correlation-id`.
- * An invalid value (too long, unsafe characters) is ignored rather than propagated.
- */
-export function readRequestId(headers: HeaderSource): string | undefined {
-  for (const name of [HIVE_HEADERS.requestId, ...HIVE_HEADERS.requestIdAliases]) {
-    const value = readHeader(headers, name)?.trim();
-    if (isValidRequestId(value)) return value;
-  }
-  return undefined;
-}
-
-/** The inbound request ID, or a new one. */
-export function resolveRequestId(headers: HeaderSource, generate: () => string = generateRequestId): string {
-  return readRequestId(headers) ?? generate();
-}
+// Request IDs and header reading are isomorphic and live in `/contracts`; they stay exported here.
+export {
+  generateRequestId, HIVE_HEADERS, isValidRequestId, readHeader, readRequestId, REQUEST_ID_PATTERN, resolveRequestId,
+  type HeaderSource,
+} from '../contracts/index.js';
 
 // ---------------------------------------------------------------------------------------
 // W3C trace context
