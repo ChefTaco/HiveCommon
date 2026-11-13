@@ -114,7 +114,7 @@ export interface RetryAfterOptions {
 }
 
 const DELTA_SECONDS = /^\d+$/;
-const DECIMAL_SECONDS = /^(?:\d+\.?\d*|\.\d+)$/;
+const DECIMAL_SECONDS = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
 // Every HTTP-date form starts with a day name; an ISO timestamp is accepted too. Anything else
 // is not handed to Date.parse, which reads strings such as `-5` or `1.2.3` as dates.
 const HTTP_DATE_LIKE = /^(?:[A-Za-z]{3}|\d{4}-\d{2}-\d{2}T)/;
