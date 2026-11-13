@@ -40,3 +40,21 @@ export function assertOathweaveEndpoint(value: string, name: string, options: En
   const problem = endpointProblem(value, options);
   if (problem) throw new TypeError(`Oathweave ${name} ${problem}`);
 }
+
+/**
+ * What a native issuer identifier must look like: a lowercase name such as `hive-iam`, never a
+ * URL, so it cannot be confused with an https issuer.
+ */
+export const OATHWEAVE_NATIVE_ISSUER_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+
+/** Validate configured native issuer identifiers and return them de-duplicated. `name` labels errors. */
+export function nativeIssuerList(value: readonly string[] | undefined, name: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array`);
+  for (const issuer of value as readonly unknown[]) {
+    if (typeof issuer !== 'string' || !OATHWEAVE_NATIVE_ISSUER_PATTERN.test(issuer)) {
+      throw new TypeError(`${name} entries must be lowercase identifiers such as hive-iam`);
+    }
+  }
+  return [...new Set(value)];
+}

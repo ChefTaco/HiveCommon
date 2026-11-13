@@ -6,7 +6,7 @@
  */
 import type { OathweavePrincipal } from './claims.js';
 import { OathweaveError } from './errors.js';
-import { OATHWEAVE_NATIVE_ISSUER_PATTERN } from './verifier.js';
+import { nativeIssuerList } from './endpoint.js';
 
 export interface OathweaveIdentityLink {
   readonly issuer: string;
@@ -78,17 +78,6 @@ function matchesWhole(pattern: RegExp, value: string): boolean {
   return match !== null && match.index === 0 && match[0] === value;
 }
 
-function nativeIssuerSet(value: readonly string[] | undefined): ReadonlySet<string> {
-  if (value === undefined) return new Set();
-  if (!Array.isArray(value)) throw new TypeError('nativeIssuers must be an array');
-  for (const issuer of value as readonly unknown[]) {
-    if (typeof issuer !== 'string' || !OATHWEAVE_NATIVE_ISSUER_PATTERN.test(issuer)) {
-      throw new TypeError('nativeIssuers entries must be lowercase identifiers such as hive-iam');
-    }
-  }
-  return new Set(value);
-}
-
 /**
  * Parse a JSON array of links, for example from `<PRODUCT>_OATHWEAVE_IDENTITIES_JSON`.
  * An entry may name its local account `localUserId` or, as older configs do, `localId`; an
@@ -97,7 +86,7 @@ function nativeIssuerSet(value: readonly string[] | undefined): ReadonlySet<stri
  */
 export function parseIdentityLinks(raw: string | unknown, options: ParseIdentityLinksOptions = {}): OathweaveIdentityLink[] {
   const localUserIdPattern = statelessPattern(options.localUserIdPattern);
-  const nativeIssuers = nativeIssuerSet(options.nativeIssuers);
+  const nativeIssuers = new Set(nativeIssuerList(options.nativeIssuers, 'nativeIssuers'));
   let json: unknown = raw;
   if (typeof raw === 'string') {
     try {

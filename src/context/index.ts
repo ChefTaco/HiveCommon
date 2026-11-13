@@ -3,10 +3,10 @@
  * AsyncLocalStorage-scoped context that loggers and outbound clients read.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { HIVE_HEADERS } from '../contracts/index.js';
+import { HIVE_HEADERS, isValidRequestId } from '../contracts/index.js';
 import { HiveError } from '../errors/index.js';
 
-export { HIVE_HEADERS } from '../contracts/index.js';
+export { HIVE_HEADERS, isValidRequestId, REQUEST_ID_PATTERN } from '../contracts/index.js';
 
 /** Anything headers can be read from: fetch `Headers`, a Node `IncomingHttpHeaders` record, or a getter. */
 export type HeaderSource =
@@ -14,33 +14,25 @@ export type HeaderSource =
   | Readonly<Record<string, string | readonly string[] | undefined>>
   | ((name: string) => string | null | undefined);
 
+function rawHeader(headers: HeaderSource, name: string): unknown {
+  const lower = name.toLowerCase();
+  if (typeof headers === 'function') return headers(lower);
+  if (typeof (headers as { get?: unknown }).get === 'function') return (headers as { get(name: string): unknown }).get(lower);
+  const record = headers as Readonly<Record<string, unknown>>;
+  if (record[lower] !== undefined) return record[lower];
+  const key = Object.keys(record).find(candidate => candidate.toLowerCase() === lower);
+  return key === undefined ? undefined : record[key];
+}
+
 /** Read one header. A repeated header (array value) is treated as absent: it is ambiguous. */
 export function readHeader(headers: HeaderSource, name: string): string | undefined {
-  const lower = name.toLowerCase();
-  let value: unknown;
-  if (typeof headers === 'function') value = headers(lower);
-  else if (typeof (headers as { get?: unknown }).get === 'function') value = (headers as { get(name: string): unknown }).get(lower);
-  else {
-    const record = headers as Readonly<Record<string, unknown>>;
-    value = record[lower];
-    if (value === undefined) {
-      const key = Object.keys(record).find(candidate => candidate.toLowerCase() === lower);
-      value = key === undefined ? undefined : record[key];
-    }
-  }
+  const value = rawHeader(headers, name);
   if (Array.isArray(value)) return value.length === 1 && typeof value[0] === 'string' ? value[0] : undefined;
   return typeof value === 'string' ? value : undefined;
 }
 
 // ---------------------------------------------------------------------------------------
 // Request IDs
-
-/** Up to 128 printable characters that are safe in logs and headers. */
-export const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:@/+=-]{1,128}$/;
-
-export function isValidRequestId(value: unknown): value is string {
-  return typeof value === 'string' && REQUEST_ID_PATTERN.test(value);
-}
 
 export function generateRequestId(): string {
   return globalThis.crypto.randomUUID();
@@ -145,7 +137,12 @@ export const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{1,255}$/;
  * disagree, because silently picking one could apply a write twice.
  */
 export function readIdempotencyKey(headers: HeaderSource): string | undefined {
-  const values = [HIVE_HEADERS.idempotencyKey, ...HIVE_HEADERS.idempotencyKeyAliases]
+  const names = [HIVE_HEADERS.idempotencyKey, ...HIVE_HEADERS.idempotencyKeyAliases];
+  // A repeated header must not read as "no key": the write would then run unprotected.
+  if (names.some(name => { const raw = rawHeader(headers, name); return Array.isArray(raw) && raw.length > 1; })) {
+    throw new HiveError('invalid_idempotency_key', 'Idempotency-Key must be given once', { status: 400 });
+  }
+  const values = names
     .map(name => readHeader(headers, name))
     .filter((value): value is string => value !== undefined)
     .map(value => value.trim());

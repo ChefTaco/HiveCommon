@@ -202,15 +202,24 @@ function invalid(what: string): HiveError {
   return new HiveError('invalid_registry_response', `The registry returned an unexpected ${what}`, { status: 502 });
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+/** An endpoint map: every value is a URL string. */
+function isEndpointMap(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every(item => typeof item === 'string');
+}
+
 function checkProduct(value: unknown): RegistryProduct {
   if (!isRecord(value) || !isProductId(value['id']) || typeof value['displayName'] !== 'string' || typeof value['installed'] !== 'boolean'
-    || !Array.isArray(value['dependencies']) || !isRecord(value['links'])) throw invalid('product');
+    || !isStringArray(value['dependencies']) || !isRecord(value['links'])) throw invalid('product');
   return value as unknown as RegistryProduct;
 }
 
 function checkConnection(value: unknown): RegistryConnection {
-  if (!isRecord(value) || !isProductId(value['id']) || !isRecord(value['nativeApis'])
-    || (value['internalEndpoints'] !== undefined && !isRecord(value['internalEndpoints']))) throw invalid('connection');
+  if (!isRecord(value) || !isProductId(value['id']) || !isEndpointMap(value['nativeApis'])
+    || (value['internalEndpoints'] !== undefined && !isEndpointMap(value['internalEndpoints']))) throw invalid('connection');
   return value as unknown as RegistryConnection;
 }
 
@@ -262,7 +271,7 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
   const client: RegistryClient = {
     async installation() {
       const body = await get('/v1/installation');
-      if (!isRecord(body) || body['schema'] !== 1 || typeof body['id'] !== 'string' || !Array.isArray(body['products'])) throw invalid('installation');
+      if (!isRecord(body) || body['schema'] !== 1 || typeof body['id'] !== 'string' || !isStringArray(body['products'])) throw invalid('installation');
       return body as unknown as RegistryInstallation;
     },
     async products(filter = {}) {
@@ -291,7 +300,8 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
       for (const [internal, endpoints] of sources) {
         const names = Object.keys(endpoints);
         const name = lookup.name ?? (names.length === 1 ? names[0] : names.includes(id) ? id : undefined);
-        const url = name === undefined ? undefined : endpoints[name];
+        // Own properties only: a name such as `constructor` must not resolve to a prototype member.
+        const url = name !== undefined && Object.hasOwn(endpoints, name) ? endpoints[name] : undefined;
         if (name !== undefined && url !== undefined) return { productId: id, name, url, internal, trust: trustFor(id) };
       }
       return undefined;

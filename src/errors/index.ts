@@ -4,7 +4,7 @@
  *
  * Isomorphic: no Node built-ins, so the browser UI can use it.
  */
-import type { ErrorEnvelope } from '../contracts/index.js';
+import { isValidRequestId, type ErrorEnvelope } from '../contracts/index.js';
 
 export type { ErrorBody, ErrorEnvelope } from '../contracts/index.js';
 export { isErrorEnvelope } from '../contracts/index.js';
@@ -194,7 +194,9 @@ export function toErrorResponse(error: unknown, options: ToErrorResponseOptions 
       ...lowercaseKeys(hive.headers),
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
-      ...(requestId ? { 'x-request-id': requestId } : {}),
+      // Only a well-formed ID becomes a header: one parsed from a peer's error body may hold
+      // characters that a server refuses to send.
+      ...(isValidRequestId(requestId) ? { 'x-request-id': requestId } : {}),
     },
   };
 }
@@ -367,7 +369,8 @@ export function parseHiveError(status: number, body: unknown, options: ParseHive
   const effectiveStatus = validStatus(status) ? status : parsed.status ?? 502;
   const code = (parsed.code !== undefined ? cleanCode(parsed.code) : undefined) ?? defaultCodeForStatus(effectiveStatus);
   const message = parsed.message !== undefined && cleanText(parsed.message) ? cleanText(parsed.message) : defaultMessageForStatus(effectiveStatus);
-  const requestId = parsed.requestId !== undefined ? cleanText(parsed.requestId, 128) : options.requestId;
+  // A malformed remote request ID is dropped, as an inbound one is, rather than passed along.
+  const requestId = [parsed.requestId?.trim(), options.requestId?.trim()].find(isValidRequestId);
   return new HiveError(code, message, {
     status: effectiveStatus,
     shape: parsed.shape,

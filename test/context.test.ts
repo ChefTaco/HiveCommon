@@ -111,6 +111,14 @@ describe('idempotency keys', () => {
     try { readIdempotencyKey({ 'idempotency-key': 'a b' }); } catch (error) { expect((error as HiveError).status).toBe(400); }
   });
 
+  it('refuses a repeated key header instead of reading it as absent', () => {
+    for (const headers of [{ 'idempotency-key': ['a', 'b'] }, { 'Idempotency-Key': ['a', 'a'] }, { 'x-idempotency-key': ['a', 'b'] }]) {
+      expect(() => readIdempotencyKey(headers)).toThrow(expect.objectContaining({ status: 400, code: 'invalid_idempotency_key' }) as Error);
+      expect(() => requireIdempotencyKey(headers)).toThrow(expect.objectContaining({ status: 400 }) as Error);
+    }
+    expect(readIdempotencyKey({ 'idempotency-key': ['only'] })).toBe('only');
+  });
+
   it('can require a key', () => {
     expect(requireIdempotencyKey({ 'idempotency-key': 'k' })).toBe('k');
     expect(() => requireIdempotencyKey({})).toThrow(expect.objectContaining({ status: 428, code: 'idempotency_key_required' }) as Error);

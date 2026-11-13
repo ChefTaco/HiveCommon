@@ -293,6 +293,20 @@ describe('stream recheck', () => {
     }
   });
 
+  it('ends the stream when recheck throws synchronously', async () => {
+    vi.useFakeTimers();
+    try {
+      const onEnd = vi.fn();
+      const recheck = (() => { throw new Error('boom'); }) as () => Promise<{ expiresAt: number }>;
+      const watch = watchStreamAuthorization({ recheck, expiresAt: Date.now() / 1000 + 600, onEnd, intervalMs: 1000 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((onEnd.mock.calls[0]?.[0] as OathweaveError).reason).toBe('session_inactive');
+      expect(watch.stopped).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stops cleanly', async () => {
     vi.useFakeTimers();
     try {

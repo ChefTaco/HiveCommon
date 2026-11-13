@@ -73,6 +73,22 @@ describe('envelope', () => {
     expect(toErrorResponse(new HiveError('x', 'y', { status: 400 })).headers['x-request-id']).toBeUndefined();
   });
 
+  it('never turns a malformed request ID into a header', () => {
+    // A server refuses to send these characters, so the error response itself would fail.
+    for (const requestId of ['r\u2026', 'two words', 'x'.repeat(129), 'line\nbreak']) {
+      const response = toErrorResponse(new HiveError('x', 'y', { status: 400, requestId }));
+      expect(response.headers['x-request-id']).toBeUndefined();
+      expect(() => new Headers(response.headers)).not.toThrow();
+    }
+  });
+
+  it('drops a malformed remote request ID when parsing', () => {
+    expect(parseHiveError(400, { error: { code: 'c', message: 'm', requestId: '\u65e5\u672c' } }).requestId).toBeUndefined();
+    expect(parseHiveError(400, { error: { code: 'c', message: 'm', requestId: 'x'.repeat(200) } }, { requestId: 'hdr' }).requestId).toBe('hdr');
+    expect(parseHiveError(400, { error: { code: 'c', message: 'm' } }, { requestId: 'bad id' }).requestId).toBeUndefined();
+    expect(parseHiveError(400, { error: { code: 'c', message: 'm', requestId: ' ok-1 ' } }).requestId).toBe('ok-1');
+  });
+
   it('never leaks unexpected errors', () => {
     const onUnexpected = vi.fn();
     const secret = new Error('database password is hunter2');

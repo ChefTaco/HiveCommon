@@ -32,6 +32,13 @@ export const HIVE_HEADERS = {
   idempotencyKeyAliases: ['x-idempotency-key'],
 } as const;
 
+/** A request ID: up to 128 printable characters that are safe in logs and headers. */
+export const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:@/+=-]{1,128}$/;
+
+export function isValidRequestId(value: unknown): value is string {
+  return typeof value === 'string' && REQUEST_ID_PATTERN.test(value);
+}
+
 // ---------------------------------------------------------------------------------------
 // Error envelope
 

@@ -80,7 +80,13 @@ export function sendError(res: ServerResponse, error: unknown, options: SendErro
  */
 export async function handleHealth(req: IncomingMessage, res: ServerResponse, health: Health<object>): Promise<boolean> {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
-  const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+  let pathname: string;
+  try {
+    pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+  } catch {
+    // A request target that is not a URL is not a health path; the handler decides what it is.
+    return false;
+  }
   const pending = health.handle(pathname);
   if (!pending) return false;
   const result = await pending;
@@ -118,7 +124,13 @@ export function hiveHandler(handler: Handler, options: HiveHandlerOptions = {}):
         await handler(req, res);
         if (!res.headersSent && !res.writableEnded) sendError(res, HiveError.notFound(), { requestId: context.requestId });
       } catch (error) {
-        sendError(res, error, { requestId: context.requestId, ...(options.logger ? { logger: options.logger } : {}) });
+        try {
+          sendError(res, error, { requestId: context.requestId, ...(options.logger ? { logger: options.logger } : {}) });
+        } catch {
+          // The envelope itself could not be sent (a logger that throws, an unsendable header).
+          // Close the connection rather than leave it open or crash on an unhandled rejection.
+          res.destroy();
+        }
       }
     });
   };

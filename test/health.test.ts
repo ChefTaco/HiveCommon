@@ -93,6 +93,13 @@ describe('readiness', () => {
     expect((await readiness({ checks: [blank], exposeErrors: true })).body.checks['x']?.error).toBe('failed');
   });
 
+  it('scrubs credentials from exposed error messages', async () => {
+    const check = { name: 'db', check: () => { throw new Error('connect failed: postgres://app:pa55word@db.example.test:5432/app'); } };
+    const error = (await readiness({ checks: [check], exposeErrors: true })).body.checks['db']?.error;
+    expect(error).toContain('connect failed');
+    expect(error).not.toContain('pa55word');
+  });
+
   it('times out slow checks and aborts their signal', async () => {
     let aborted = false;
     const started = Date.now();
@@ -120,6 +127,8 @@ describe('readiness', () => {
   it('requires unique names', async () => {
     await expect(readiness({ checks: [{ name: 'a', check: () => true }, { name: 'a', check: () => true }] })).rejects.toThrow(/unique/);
     await expect(readiness({ checks: [{ name: '', check: () => true }] })).rejects.toThrow(/unique/);
+    // createHealth() refuses them at startup rather than on every readiness request.
+    expect(() => createHealth({ checks: [{ name: 'a', check: () => true }, { name: 'a', check: () => true }] })).toThrow(/unique/);
   });
 });
 

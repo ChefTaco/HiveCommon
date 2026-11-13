@@ -72,6 +72,27 @@ describe('MemoryDedupeStore', () => {
   });
 });
 
+describe('feed and dedupe limits', () => {
+  it('never defaults above maxLimit', () => {
+    expect(parseFeedQuery(new URLSearchParams(''), { maxLimit: 10 })).toEqual({ after: undefined, limit: 10 });
+    expect(parseFeedQuery({}, { defaultLimit: 500 }).limit).toBe(200);
+  });
+
+  it('rejects a cursor holding a non-finite number', () => {
+    const cursor = Buffer.from('{"offset":1e999}').toString('base64url');
+    expect(() => decodeCursor(cursor)).toThrow(expect.objectContaining({ code: 'invalid_cursor', status: 400 }) as Error);
+  });
+
+  it('refuses a dedupe store that could hold nothing', () => {
+    // maxEntries 0 used to make claim() loop forever.
+    for (const maxEntries of [0, -1, 1.5, Number.NaN]) expect(() => new MemoryDedupeStore({ maxEntries })).toThrow(RangeError);
+    const store = new MemoryDedupeStore({ maxEntries: 1 });
+    expect(store.claim('a', 1000)).toBe(true);
+    expect(store.claim('b', 1000)).toBe(true);
+    expect(store.size).toBe(1);
+  });
+});
+
 describe('formatChatterMostMessage', () => {
   it('formats severity, title, summary and an absolute link', () => {
     const text = formatChatterMostMessage(EVENT, { linkBaseUrl: 'https://hive.example.com' });
@@ -132,6 +153,15 @@ describe('ChatterMostNotifier', () => {
     const { instance, calls } = notifier({ format: event => ({ text: `custom ${event.id}` }) });
     await instance.notify(EVENT);
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ text: 'custom evt-01' });
+  });
+
+  it('does not claim an event whose formatter throws, so a later call can deliver it', async () => {
+    let fail = true;
+    const { instance, calls } = notifier({ format: event => { if (fail) throw new Error('formatter bug'); return { text: event.id }; } });
+    await expect(instance.notify(EVENT)).rejects.toThrow('formatter bug');
+    fail = false;
+    expect(await instance.notify(EVENT)).toEqual({ status: 'sent', attempts: 1 });
+    expect(calls).toHaveLength(1);
   });
 
   it('rejects invalid events before sending', async () => {

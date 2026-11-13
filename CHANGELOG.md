@@ -6,6 +6,60 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+Fixes from a review of every module. No export was removed or renamed.
+
+### Added
+
+- `/contracts`: `REQUEST_ID_PATTERN` and `isValidRequestId()`, moved from `/context` (which still
+  exports both) so the isomorphic modules can use them.
+
+### Fixed
+
+- `/log`: `redactText()` took quadratic time on text with many dotted words (`a.a.a.…`) or many
+  `eyJ…-eyJ…` runs: about 3.5 s for 100 kB and a minute for 400 kB, blocking the event loop of any
+  service that logs caller-supplied text. The URL-credential rule is now anchored on `://` and the
+  JWT header segment is bounded at 4096 characters; matching is linear.
+- `/log`: URL credentials without a user (`redis://:password@host`) or without a password
+  (`https://token@host`) were not masked. Any URL userinfo is now masked.
+- `/log`: keys containing `jwt`, `bearer` or `signature`, and the query parameters `secret`, `jwt`,
+  `assertion` and `client_assertion`, are now treated as secrets.
+- `/errors`: `toErrorResponse()` set `x-request-id` from a `HiveError`'s own `requestId` unchecked.
+  One parsed from a peer's error body could hold characters a server refuses to send (including
+  the `…` that `parseHiveError()` itself appended when truncating), so sending the error threw.
+  The header is now set only for a well-formed ID, and `parseHiveError()` drops a malformed remote
+  request ID (falling back to the `requestId` option) instead of keeping a cleaned copy.
+- `/context`: `readIdempotencyKey()` read a repeated header given as an array (`['a', 'b']`) as
+  absent, so the write ran without idempotency protection. It is now a 400
+  `invalid_idempotency_key`.
+- `/events`: `ChatterMostNotifier.notify()` claimed the event before building its body, so a
+  `format` function that threw left the event claimed, and every later call answered `duplicate`
+  for the dedupe window (24 h). The body is now built first.
+- `/events`: `new MemoryDedupeStore({ maxEntries: 0 })` made `claim()` loop forever; `maxEntries`
+  must now be a positive integer. `parseFeedQuery()` no longer defaults above `maxLimit`, and
+  `decodeCursor()` refuses a non-finite number (`1e999`).
+- `/registry`: `endpoint(id, { name })` looked the name up on the endpoint map's prototype chain,
+  so `constructor` or `toString` returned a function as the `url`. Only listed endpoints resolve
+  now. Endpoint maps whose values are not strings, non-string `dependencies` and non-string
+  installation `products` are a 502 `invalid_registry_response`.
+- `/health`: error text shown with `exposeErrors` is scrubbed with `redactText()` first, so a
+  connection string in a driver error no longer shows its password. `createHealth()` refuses
+  duplicate or empty check names at startup instead of failing every readiness request.
+- `/node-http`: a request target that is not a URL (`//[`) made `handleHealth()` throw, which
+  `hiveHandler()` answered with a logged 500; it is now passed to the handler like any other
+  non-health request. If sending the error envelope itself throws (a logger that throws, for
+  example), `hiveHandler()` closes the connection instead of leaving an unhandled rejection.
+- `/oathweave`: the verifier read `audience` and `userinfoUrl` from the options object on every
+  call, so changing that object after creation changed what the verifier accepted, without the
+  endpoint checks. Both are now read once. `accept`, `requestTimeoutMs`, `sessionCacheTtlMs` (an
+  infinite value cached sessions forever) and `sessionCacheMax` are validated at startup.
+- `/oathweave`: `watchStreamAuthorization()` let a `recheck` that threw synchronously escape its
+  timer as an uncaught exception; it now ends the stream with `session_inactive`.
+
+### Changed
+
+- Internal: native issuer validation and the fifteen-minute lifetime constant each have one
+  definition instead of two.
+
 ## [0.4.0] - 2026-11-12
 
 Fixes found while adopting 0.3.0, and two identity-link options. Every change is additive: without

@@ -315,8 +315,10 @@ const installed = await registry.installedProducts();
 const endpoint = await registry.endpoint('emberpath'); // { url, internal, trust } or undefined
 ```
 
-`product()` and `connection()` return `undefined` for unknown products; other failures are
-`HiveError`s parsed from the registry's envelope. The registry stores no TLS material, so
+`product()` and `connection()` return `undefined` for unknown products. An error response is a
+`HiveError` parsed from the registry's envelope, a success body that is not the documented shape is
+a 502 `invalid_registry_response`, and a network failure or timeout rejects with the transport's
+own error. The registry stores no TLS material, so
 `endpoint()` returns the trust you configure. `createCaFetch({ ca })` is a small `node:https`
 fetch that trusts only the given CA.
 

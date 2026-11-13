@@ -58,8 +58,8 @@ export function parseFeedQuery(
     }
     return value as string | undefined;
   };
-  const defaultLimit = options.defaultLimit ?? 50;
   const maxLimit = options.maxLimit ?? 200;
+  const defaultLimit = Math.min(options.defaultLimit ?? 50, maxLimit);
   const rawLimit = read('limit');
   let limit = defaultLimit;
   if (rawLimit !== undefined && rawLimit !== '') {
@@ -101,7 +101,7 @@ export function decodeCursor(cursor: string): Record<string, string | number> {
     const binary = atob(cursor.replace(/-/g, '+').replace(/_/g, '/'));
     const value: unknown = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
     if (!value || typeof value !== 'object' || Array.isArray(value)
-      || !Object.values(value).every(item => typeof item === 'string' || typeof item === 'number')) throw new Error('not a position');
+      || !Object.values(value).every(item => typeof item === 'string' || (typeof item === 'number' && Number.isFinite(item)))) throw new Error('not a position');
     return value as Record<string, string | number>;
   } catch {
     throw new HiveError('invalid_cursor', 'The cursor is not valid', { status: 400 });
@@ -127,6 +127,8 @@ export class MemoryDedupeStore implements DedupeStore {
 
   constructor(options: { readonly maxEntries?: number; readonly now?: () => number } = {}) {
     this.#max = options.maxEntries ?? 10_000;
+    // Zero or less would make claim() evict forever.
+    if (!Number.isInteger(this.#max) || this.#max < 1) throw new RangeError('maxEntries must be a positive integer');
     this.#now = options.now ?? (() => Date.now());
   }
 
@@ -272,10 +274,12 @@ export class ChatterMostNotifier {
     const validation = validateHiveEvent(input);
     if (!validation.ok) throw HiveError.validation('The event is not a valid HiveEvent', validation.issues);
     const event = validation.value;
+    // Build the body before claiming: a formatter that throws must not leave the event claimed
+    // (and so silently undeliverable) for the whole dedupe window.
+    const body = JSON.stringify(this.payload(event));
     const key = `hive-event:${event.product}:${event.id}`;
     if (!await this.#dedupe.claim(key, this.#options.dedupeTtlMs ?? 24 * 60 * 60_000)) return { status: 'duplicate', attempts: 0 };
 
-    const body = JSON.stringify(this.payload(event));
     const retries = this.#options.retries ?? 3;
     const base = this.#options.backoffMs ?? 500;
     const max = this.#options.maxBackoffMs ?? 8_000;
