@@ -62,6 +62,18 @@
       "types": "./dist/contracts/index.d.ts",
       "default": "./dist/contracts/index.js"
     },
+    "./fetch": {
+      "types": "./dist/fetch/index.d.ts",
+      "default": "./dist/fetch/index.js"
+    },
+    "./feed": {
+      "types": "./dist/feed/index.d.ts",
+      "default": "./dist/feed/index.js"
+    },
+    "./secrets": {
+      "types": "./dist/secrets/index.d.ts",
+      "default": "./dist/secrets/index.js"
+    },
     "./hono": {
       "types": "./dist/hono/index.d.ts",
       "default": "./dist/hono/index.js"

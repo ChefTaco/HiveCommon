@@ -7,7 +7,7 @@ request IDs and trace context, read the Hive Registry, log safely and publish Hi
 - ESM only, TypeScript with `.d.ts` output, strict types.
 - One runtime dependency (`jose`); `hono` is an optional peer.
 - Each module is its own subpath, so a product loads only what it uses.
-- `/contracts` and `/errors` are isomorphic, so the browser UI can use them too.
+- `/contracts`, `/errors`, `/fetch` and `/feed` are isomorphic, so the browser UI can use them too.
 
 ```bash
 npm install @hivemagnus/hive-common
@@ -15,7 +15,7 @@ npm install @hivemagnus/hive-common
 
 | Subpath | What it is | Runs in |
 | --- | --- | --- |
-| [`/oathweave`](#oathweave) | Oathweave access-token verifier, identity links, permissions, stream re-check | Node |
+| [`/oathweave`](#oathweave) | Oathweave access-token verifier, identity links, permissions, stream re-check, service-token provider | Node |
 | [`/oathweave/conformance`](#conformance-vectors) | Runs the shipped test vectors against any verifier | Node |
 | [`/errors`](#errors) | `HiveError`, the envelope, `toErrorResponse()`, `parseHiveError()` | Node, browser |
 | [`/health`](#health) | `/health/live` and `/health/ready` with dependency checks | Node |
@@ -23,7 +23,10 @@ npm install @hivemagnus/hive-common
 | [`/registry`](#registry) | Typed Hive Registry client | Node |
 | [`/log`](#log) | Structured JSON logger and `redact()` | Node |
 | [`/events`](#events) | HiveEvent feed helpers and the ChatterMost notifier | Node |
-| [`/contracts`](#contracts) | Isomorphic types and validators | Node, browser |
+| [`/feed`](#feed) | HiveEvent feed consumer | Node, browser |
+| [`/fetch`](#fetch) | Outbound fetch with a deadline and a response-size limit | Node, browser |
+| [`/secrets`](#secrets) | Constant-time comparison, digest-checked static tokens, bearer header parsing | Node |
+| [`/contracts`](#contracts) | Isomorphic types and validators, request IDs, `Retry-After` | Node, browser |
 | [`/hono`](#hono) | Hono middleware | Node |
 | [`/node-http`](#node-http) | `node:http` helpers | Node |
 
@@ -190,6 +193,39 @@ const links = parseIdentityLinks(raw, {
 Endpoints must be `https`. For tests against a loopback server, pass `allowInsecureLoopback: true`.
 Native issuer identifiers are names, not endpoints, and are never fetched.
 
+#### Service tokens
+
+A service that calls another product authenticates as itself with a `client_credentials` token:
+
+```ts
+import { createServiceTokenProvider } from '@hivemagnus/hive-common/oathweave';
+
+const tokens = createServiceTokenProvider({
+  tokenUrl: process.env.OATHWEAVE_TOKEN_URL!,     // https only
+  clientId: 'ardent-studio',
+  clientSecret: process.env.OATHWEAVE_CLIENT_SECRET!,
+  scope: 'hivemem:write',                         // optional
+  audience: 'hivemem',                            // optional; one provider per audience
+});
+
+const response = await fetch(url, { headers: { authorization: `Bearer ${await tokens.token()}` } });
+if (response.status === 401) tokens.invalidate(); // the next token() fetches a new one
+```
+
+`token()` fetches on first use and caches the token. It is replaced in the background at 80 % of
+its lifetime (and at least 30 s before the end) while callers keep getting the cached one, is no
+longer handed out 5 s before it expires, and concurrent callers share one request. The expiry is
+`expires_in` (300 s when absent, bounded to 10 s-1 h) lowered to the token's own `exp` claim.
+After a failed request no new one starts for 5 s. With `audience` set, an issued JWT whose `aud`
+does not include it is refused. Each of these is an option (`refreshAfterMs`, `expiryMarginMs`,
+`minLifetimeMs`, `maxLifetimeMs`, `defaultLifetimeSec`, `clampToTokenExpiry`, `failureBackoffMs`,
+`serveStaleWhileRefreshing`, `verifyAudience`, `timeoutMs`, `maxResponseBytes`).
+
+Failures are a `ServiceTokenError`: a `HiveError` with status 503, code `auth_unavailable` and a
+`reason` (`backoff`, `http`, `network`, `timeout`, `malformed_response`, `expired_token`,
+`audience_mismatch`). Its message never holds the client secret, a token or the token endpoint's
+response.
+
 ### Conformance vectors
 
 `test-vectors/oathweave/vectors.json` ships a test JWKS and fifteen pre-signed tokens (valid user,
@@ -277,6 +313,11 @@ createHealth({ service: 'studio', liveBody: { status: 'ok' } });
 createHealth({ service: 'hive-skills', liveBody: standard => ({ status: 'ok', service: standard.service, protocol: 1 }) });
 ```
 
+`readyCacheMs` bounds how often readiness probes the dependencies, which matters when the
+endpoint is reachable without authentication: `0` makes requests that arrive during a run share
+it, and a positive number also serves the finished result for that many milliseconds. Unset (the
+default), every request runs every check.
+
 ### context
 
 ```ts
@@ -338,6 +379,11 @@ log.error('upstream failed', { err, headers: req.headers });    // authorization
 credentials, JWTs, provider token formats, private keys, URL credentials and secret query
 parameters. Numbers and booleans under such keys are kept, so `inputTokens: 512` survives.
 
+A key is masked when its name contains a secret-looking word, which also catches identifiers such
+as `authorizationId`. List those in `allowKeys` (`redact(value, { allowKeys: ['authorizationId'] })`,
+or `redactAllowKeys` on the logger): they are no longer masked for their name, while their values
+are still scrubbed like any other string.
+
 ### events
 
 ```ts
@@ -359,6 +405,89 @@ The notifier validates the event, posts a Mattermost incoming-webhook payload (M
 mentions in event text are neutralised), times out each attempt, retries 408, 429 (honouring
 `Retry-After`), 5xx and network errors with exponential backoff and jitter, and delivers each
 event ID once per 24 h. Pass a shared `DedupeStore` to deduplicate across replicas.
+
+Feeds are ordered oldest first by `(occurredAt, id)`, and a cursor is that position:
+
+```ts
+import { buildFeedPage, feedSince, parseFeedQuery } from '@hivemagnus/hive-common/events';
+
+const { after, limit } = parseFeedQuery(url.searchParams);
+const window = { after, retentionMs: 14 * 86_400_000 };
+const records = store.recordsSince(feedSince(window));          // ISO time: retention start or the cursor's
+return Response.json(buildFeedPage(records.map(toHiveEvent), {  // toHiveEvent may return null
+  ...window, limit, onDropped: count => log.warn('invalid events dropped', { count }),
+}));
+```
+
+`buildFeedPage()` validates every candidate strictly (an invalid one is dropped and reported,
+never served), keeps those inside the retention window and strictly after the cursor, sorts them
+and cuts at `limit`. `encodeFeedPosition()`, `decodeFeedPosition()` (undefined for a bad cursor)
+and `requireFeedPosition()` (a 400 `invalid_cursor`) are the cursor on their own;
+`compareFeedPositions()` and `isAfterFeedPosition()` are the order, also in `/contracts`.
+
+### feed
+
+The consumer side, usable in a browser:
+
+```ts
+import { readHiveEventFeed, HiveEventFeedError } from '@hivemagnus/hive-common/feed';
+
+const progress = { events: [], cursor: lastCursor, dropped: 0 };
+try {
+  const { caughtUp } = await readHiveEventFeed(fetch, '/api/hiveskills/v1/hive/events', {
+    progress, product: 'hiveskills', signal: AbortSignal.timeout(10_000),
+  });
+} catch (error) {
+  if (error instanceof HiveEventFeedError) report(error.kind, error.status); // progress keeps earlier pages
+}
+```
+
+It asks for `?after=<cursor>&limit=200` page by page until `nextCursor` is null or `maxPages`
+(10) pages were read. Each event is validated on its own, so one bad event is dropped and
+counted, not the page; with `product` set, an event that claims another product is dropped too.
+`kind` is `aborted`, `network`, `status` or `malformed`. `maxPageBytes` bounds a page.
+
+### fetch
+
+```ts
+import { boundedFetch, fetchJson, readBodyBounded } from '@hivemagnus/hive-common/fetch';
+import { outboundHeaders } from '@hivemagnus/hive-common/context';
+
+const { data } = await fetchJson(`${base}/v1/things`, { headers: { authorization: `Bearer ${token}` }, signal }, {
+  timeoutMs: 10_000,            // request and body together; 15 s by default
+  maxResponseBytes: 1_048_576,  // 1 MiB by default
+  contextHeaders: outboundHeaders, // forwards x-request-id, traceparent and tracestate
+});
+```
+
+`boundedFetch()` returns `{ response, body }` with the body already read, for any status. It
+combines its deadline with the caller's `signal`, defaults to `redirect: 'error'`, and never
+buffers more than `maxResponseBytes`: a larger `content-length` is refused before reading, and a
+body without one as soon as it passes the limit. `fetchJson()` adds `accept: application/json`,
+parses the body and throws the peer's error as a `HiveError` (through `parseHiveError()`), unless
+`throwOnHttpError` is false. `readBodyBounded()`, `readTextBounded()` and `readJsonBounded()` do
+the bounded read for a response obtained elsewhere.
+
+Failures are a `BoundedFetchError` with a `reason`: `timeout`, `network`, `response_too_large`,
+`empty_response`, `invalid_json`. Its message never holds the URL, which may be a secret; the
+original error is on `cause`. The caller's own abort is rethrown unchanged.
+
+### secrets
+
+For the static service credentials and webhook secrets a product still holds (Oathweave tokens go
+through the verifier):
+
+```ts
+import { bearerMatchesSha256Digest, timingSafeEqualString } from '@hivemagnus/hive-common/secrets';
+
+if (!bearerMatchesSha256Digest(req.headers.authorization, process.env.EXPORT_TOKEN_SHA256)) throw HiveError.unauthorized();
+```
+
+`timingSafeEqualString(a, b)` compares in constant time. `matchesSha256Digest(token, digest)`
+checks a presented token against a stored lowercase-hex SHA-256 digest; an unset digest or an
+empty token never matches, so a missing setting cannot open a route. `readBearerToken(header)`
+returns the token of an `Authorization: Bearer` header or undefined, without throwing
+(`allowBare` also accepts a header that is only the token). `sha256Hex()` is the digest itself.
 
 ### contracts
 
@@ -385,6 +514,13 @@ actorId }`, segments `[a-z0-9_-]{2,32}`), `ErrorEnvelope`, `HIVE_HEADERS`. Valid
 fields by default; producers should pass `{ strict: true }`. The validators are hand-written so
 the browser bundle gains no dependency.
 
+Request IDs work here without `/context` (which needs Node): `generateRequestId()` (a UUID, or
+random hex in a page outside a secure context, where `crypto.randomUUID` is missing),
+`readRequestId(response.headers)`, `resolveRequestId()` and `isValidRequestId()`.
+`retryAfterMs(header)` reads a `Retry-After` header (delta-seconds or an HTTP date) as
+milliseconds, undefined when absent or unreadable; options add a clock, decimal seconds, a
+fallback and bounds.
+
 ### hono
 
 ```ts
@@ -404,6 +540,18 @@ The health routes, `errorHandler()` and `notFoundHandler()` respond through Hono
 headers set earlier in the request with `c.header()` (a trace or request ID, for example) stay on
 the response.
 
+`readJsonBody(c, { maxBytes })` reads and parses a JSON body within a size limit (1 MiB by
+default) and returns `{ value, text, bytes }`. The limit is enforced while the body streams, so
+it holds without a `content-length`. It throws a `HiveError`: 413 `too_large`, 415
+`unsupported_media_type` (when there is a body that is not `application/json`;
+`requireContentType: 'always' | 'never'` changes that), 400 `invalid_json` for a body that does
+not parse or is empty (unless `emptyValue` is set). `errorFor` substitutes a product's own
+errors. `readBody()` gives the bytes. Both also take a fetch `Request`.
+
+`securityHeaders()` sets `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
+`X-Frame-Options: DENY` on every response; change or omit each, add more with `headers` (a
+`Content-Security-Policy`, say), and set `apply: 'after'` to override what a handler set.
+
 Requires `hono` 4.13.18 or later, the suite minimum since a recent Hono security advisory.
 
 ### node-http
@@ -420,6 +568,13 @@ http.createServer(hiveHandler(async (req, res) => {
 
 `hiveHandler()` adds the request context, health routes and the error envelope; anything thrown
 becomes an envelope, and a handler that sends nothing gets a 404.
+
+`readJsonBody(req, { maxBytes })` and `readBody()` are the same bounded readers as in `/hono`,
+with the same options and errors. An oversized upload is answered and then drained: the 413 is
+thrown as soon as the limit is passed, so the client gets the response while it is still
+sending, and the rest of the upload is discarded for up to `lingerMs` (5 s) before the
+connection is closed. Without that, a client blocked on its write sees a reset instead of the
+413. `drainRequest(req)` does the same after any refusal sent without reading the body.
 
 ## Adopting HiveCommon in a product
 
