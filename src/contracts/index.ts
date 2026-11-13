@@ -39,6 +39,111 @@ export function isValidRequestId(value: unknown): value is string {
   return typeof value === 'string' && REQUEST_ID_PATTERN.test(value);
 }
 
+/** Anything headers can be read from: fetch `Headers`, a Node `IncomingHttpHeaders` record, or a getter. */
+export type HeaderSource =
+  | { get(name: string): string | null | undefined }
+  | Readonly<Record<string, string | readonly string[] | undefined>>
+  | ((name: string) => string | null | undefined);
+
+/** The raw value of a header, before repeated values are refused. Lets a caller tell a repeated header apart from an absent one. */
+export function rawHeader(headers: HeaderSource, name: string): unknown {
+  const lower = name.toLowerCase();
+  if (typeof headers === 'function') return headers(lower);
+  if (typeof (headers as { get?: unknown }).get === 'function') return (headers as { get(name: string): unknown }).get(lower);
+  const record = headers as Readonly<Record<string, unknown>>;
+  if (record[lower] !== undefined) return record[lower];
+  const key = Object.keys(record).find(candidate => candidate.toLowerCase() === lower);
+  return key === undefined ? undefined : record[key];
+}
+
+/** Read one header. A repeated header (array value) is treated as absent: it is ambiguous. */
+export function readHeader(headers: HeaderSource, name: string): string | undefined {
+  const value = rawHeader(headers, name);
+  if (Array.isArray(value)) return value.length === 1 && typeof value[0] === 'string' ? value[0] : undefined;
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * A new request ID: a random UUID, or 32 random hex characters where `crypto.randomUUID` is
+ * missing or refuses (a browser page outside a secure context).
+ */
+export function generateRequestId(): string {
+  const source = globalThis.crypto;
+  if (typeof source.randomUUID === 'function') {
+    try {
+      return source.randomUUID();
+    } catch {
+      // Not a secure context: fall through to getRandomValues, which works everywhere.
+    }
+  }
+  return Array.from(source.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * The request ID in a set of headers (a request's or a response's): `x-request-id`, else
+ * `x-hive-request-id`, else `x-correlation-id`. An invalid value (too long, unsafe characters)
+ * is ignored rather than propagated.
+ */
+export function readRequestId(headers: HeaderSource): string | undefined {
+  for (const name of [HIVE_HEADERS.requestId, ...HIVE_HEADERS.requestIdAliases]) {
+    const value = readHeader(headers, name)?.trim();
+    if (isValidRequestId(value)) return value;
+  }
+  return undefined;
+}
+
+/** The request ID in the headers, or a new one. */
+export function resolveRequestId(headers: HeaderSource, generate: () => string = generateRequestId): string {
+  return readRequestId(headers) ?? generate();
+}
+
+// ---------------------------------------------------------------------------------------
+// Retry-After
+
+export interface RetryAfterOptions {
+  /** The clock an HTTP date is measured against. `Date.now`. */
+  readonly now?: () => number;
+  /** Also accept decimal delta-seconds (`1.5`), rounded up to a millisecond. Off: digits only, as RFC 9110 defines. */
+  readonly allowFractional?: boolean;
+  /** Returned when the header is absent or unreadable. Without it the result is undefined. */
+  readonly fallbackMs?: number;
+  /** Lower bound for the result, the fallback included. */
+  readonly minMs?: number;
+  /** Upper bound for the result, the fallback included. */
+  readonly maxMs?: number;
+}
+
+const DELTA_SECONDS = /^\d+$/;
+const DECIMAL_SECONDS = /^(?:\d+\.?\d*|\.\d+)$/;
+// Every HTTP-date form starts with a day name; an ISO timestamp is accepted too. Anything else
+// is not handed to Date.parse, which reads strings such as `-5` or `1.2.3` as dates.
+const HTTP_DATE_LIKE = /^(?:[A-Za-z]{3}|\d{4}-\d{2}-\d{2}T)/;
+
+/**
+ * A `Retry-After` header as milliseconds to wait: delta-seconds, or an HTTP date measured
+ * against `now` (a date in the past is 0). Undefined when the header is absent or unreadable,
+ * unless `fallbackMs` is given. The second argument may be the clock alone.
+ */
+export function retryAfterMs(header: string | null | undefined, options: RetryAfterOptions & { readonly fallbackMs: number }): number;
+export function retryAfterMs(header: string | null | undefined, options?: RetryAfterOptions | (() => number)): number | undefined;
+export function retryAfterMs(header: string | null | undefined, options: RetryAfterOptions | (() => number) = {}): number | undefined {
+  const settings: RetryAfterOptions = typeof options === 'function' ? { now: options } : options;
+  const text = typeof header === 'string' ? header.trim() : '';
+  let value: number | undefined;
+  if (text) {
+    if ((settings.allowFractional ? DECIMAL_SECONDS : DELTA_SECONDS).test(text)) value = Math.ceil(Number(text) * 1000);
+    else if (HTTP_DATE_LIKE.test(text)) {
+      const date = Date.parse(text);
+      if (!Number.isNaN(date)) value = Math.max(0, date - (settings.now ? settings.now() : Date.now()));
+    }
+  }
+  if (value === undefined || !Number.isFinite(value)) value = settings.fallbackMs;
+  if (value === undefined) return undefined;
+  if (settings.minMs !== undefined) value = Math.max(value, settings.minMs);
+  if (settings.maxMs !== undefined) value = Math.min(value, settings.maxMs);
+  return value;
+}
+
 // ---------------------------------------------------------------------------------------
 // Error envelope
 
@@ -275,6 +380,29 @@ export function validateHiveEvent(value: unknown, options: HiveEventValidationOp
 
 export function isHiveEvent(value: unknown): value is HiveEvent {
   return validateHiveEvent(value).ok;
+}
+
+// ---------------------------------------------------------------------------------------
+// Feed positions
+
+/** Where an event sits in a feed: feeds are ordered oldest first by `(occurredAt, id)`. */
+export interface FeedPosition {
+  /** RFC 3339 UTC timestamp. */
+  readonly occurredAt: string;
+  readonly id: string;
+}
+
+/**
+ * Feed order: by instant, then by ID in code-unit order. Negative when `a` comes first, zero
+ * when they are the same position. Timestamps compare as instants, so `…00Z` equals `…00.000Z`.
+ */
+export function compareFeedPositions(a: FeedPosition, b: FeedPosition): number {
+  return Date.parse(a.occurredAt) - Date.parse(b.occurredAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** Whether `candidate` comes strictly after `position` in feed order. Everything is after no position. */
+export function isAfterFeedPosition(candidate: FeedPosition, position: FeedPosition | null | undefined): boolean {
+  return !position || compareFeedPositions(candidate, position) > 0;
 }
 
 /** Validate a feed page of HiveEvents. Any invalid event fails the whole page. */

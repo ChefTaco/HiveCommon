@@ -3,7 +3,11 @@
  * `/contracts` (isomorphic); this module re-exports them.
  */
 import {
+  compareFeedPositions,
+  isAfterFeedPosition,
+  isRfc3339Utc,
   validateHiveEvent,
+  type FeedPosition,
   type HiveEvent,
   type HiveEventSeverity,
   type Page,
@@ -13,6 +17,9 @@ import { endpointProblem } from '../oathweave/endpoint.js';
 import { redactText } from '../log/redact.js';
 
 export {
+  compareFeedPositions,
+  isAfterFeedPosition,
+  type FeedPosition,
   HIVE_EVENT_LIMITS,
   HIVE_EVENT_SEVERITIES,
   HIVE_EVENT_VERSION,
@@ -106,6 +113,142 @@ export function decodeCursor(cursor: string): Record<string, string | number> {
   } catch {
     throw new HiveError('invalid_cursor', 'The cursor is not valid', { status: 400 });
   }
+}
+
+// ---------------------------------------------------------------------------------------
+// Time-and-ID cursors and page building
+
+/** The longest ID a feed cursor may carry: longer than any event ID, for synthetic positions. */
+const MAX_POSITION_ID = 256;
+// eslint-disable-next-line no-control-regex
+const POSITION_ID_UNSAFE = /[\u0000-\u001f\u007f]/;
+
+function isFeedPosition(position: { readonly occurredAt: unknown; readonly id: unknown }): position is FeedPosition {
+  return isRfc3339Utc(position.occurredAt) && typeof position.id === 'string' && position.id.length >= 1
+    && position.id.length <= MAX_POSITION_ID && !POSITION_ID_UNSAFE.test(position.id);
+}
+
+/**
+ * The cursor for a feed position (an event is one): `encodeCursor({ t: occurredAt, i: id })`.
+ * Throws a TypeError for a position that `decodeFeedPosition()` would not read back.
+ */
+export function encodeFeedPosition(position: FeedPosition): string {
+  if (!isFeedPosition(position)) throw new TypeError('A feed position needs an RFC 3339 UTC occurredAt and an id of 1-256 characters');
+  return encodeCursor({ t: position.occurredAt, i: position.id });
+}
+
+/**
+ * Read a cursor from `encodeFeedPosition()`. Undefined for anything else: not a cursor, other
+ * or extra fields, a timestamp that is not RFC 3339 UTC, an empty or over-long ID.
+ */
+export function decodeFeedPosition(cursor: string): FeedPosition | undefined {
+  let value: Record<string, string | number>;
+  try {
+    value = decodeCursor(cursor);
+  } catch {
+    return undefined;
+  }
+  if (Object.keys(value).length !== 2) return undefined;
+  const position = { occurredAt: value['t'], id: value['i'] };
+  return isFeedPosition(position) ? position : undefined;
+}
+
+/** Like `decodeFeedPosition()`, but an unreadable cursor is a 400 `invalid_cursor` HiveError. */
+export function requireFeedPosition(cursor: string): FeedPosition {
+  const position = decodeFeedPosition(cursor);
+  if (!position) throw new HiveError('invalid_cursor', 'The cursor is not valid', { status: 400 });
+  return position;
+}
+
+function positionOf(after: FeedPosition | string | null | undefined): FeedPosition | undefined {
+  if (after === undefined || after === null || after === '') return undefined;
+  return typeof after === 'string' ? requireFeedPosition(after) : after;
+}
+
+export interface FeedWindowOptions {
+  /** The position the page starts after: a decoded position or a cursor (a bad cursor is a 400). */
+  readonly after?: FeedPosition | string | null | undefined;
+  /** Events older than this are not served. Unset: no retention limit. */
+  readonly retentionMs?: number | undefined;
+  /** `Date.now()`, as a number or a function. */
+  readonly now?: number | (() => number);
+}
+
+function retentionStart(options: FeedWindowOptions): number | undefined {
+  if (options.retentionMs === undefined) return undefined;
+  if (!Number.isFinite(options.retentionMs) || options.retentionMs < 0) throw new RangeError('retentionMs must be a non-negative number');
+  const now = typeof options.now === 'function' ? options.now() : options.now ?? Date.now();
+  return now - options.retentionMs;
+}
+
+/**
+ * The earliest instant a page can need, as an ISO timestamp for a storage query: the start of
+ * the retention window or the cursor's time, whichever is later. Undefined when neither is set.
+ * Records exactly at the cursor's time must still be read: the ID decides which come after it.
+ */
+export function feedSince(options: FeedWindowOptions): string | undefined {
+  const start = retentionStart(options);
+  const position = positionOf(options.after);
+  const cursorTime = position ? Date.parse(position.occurredAt) : undefined;
+  const since = start === undefined ? cursorTime : cursorTime === undefined ? start : Math.max(start, cursorTime);
+  return since === undefined ? undefined : new Date(since).toISOString();
+}
+
+/** One candidate `buildFeedPage()` left out because it was not a valid HiveEvent. */
+export interface DroppedFeedEvent {
+  /** Its index among the candidates given (nullish candidates count). */
+  readonly index: number;
+  readonly issues: readonly string[];
+}
+
+export interface BuildFeedPageOptions extends FeedWindowOptions {
+  readonly limit: number;
+  /**
+   * How candidates are checked. `strict` (the default) also refuses unknown fields, as a
+   * producer should; `lenient` drops them; `none` trusts the candidates, which must then be
+   * valid HiveEvents already.
+   */
+  readonly validate?: 'strict' | 'lenient' | 'none';
+  /** Called once, when at least one candidate was dropped as invalid. Log it: it is a producer bug. */
+  readonly onDropped?: (count: number, dropped: readonly DroppedFeedEvent[]) => void;
+}
+
+/**
+ * Build one feed page from candidate events in any order: validate each (an invalid one is
+ * dropped and reported, never served), keep those inside the retention window and strictly
+ * after the cursor, sort oldest first by `(occurredAt, id)` and cut at `limit` with a
+ * time-and-ID `nextCursor`. `null` and `undefined` candidates are skipped, so mapping functions
+ * may return them for records that are not events. Pass every event that can follow the cursor;
+ * a caller that reads storage in bounded batches must decide itself when a page is complete.
+ */
+export function buildFeedPage(candidates: Iterable<unknown>, options: BuildFeedPageOptions): Page<HiveEvent> {
+  if (!Number.isInteger(options.limit) || options.limit < 1) throw new RangeError('limit must be a positive integer');
+  const mode = options.validate ?? 'strict';
+  const position = positionOf(options.after);
+  const start = retentionStart(options);
+  const events: HiveEvent[] = [];
+  const dropped: DroppedFeedEvent[] = [];
+  let index = -1;
+  for (const candidate of candidates) {
+    index++;
+    if (candidate === null || candidate === undefined) continue;
+    let event: HiveEvent;
+    if (mode === 'none') event = candidate as HiveEvent;
+    else {
+      const checked = validateHiveEvent(candidate, { strict: mode === 'strict' });
+      if (!checked.ok) {
+        dropped.push({ index, issues: checked.issues });
+        continue;
+      }
+      event = checked.value;
+    }
+    if (start !== undefined && Date.parse(event.occurredAt) < start) continue;
+    if (!isAfterFeedPosition(event, position)) continue;
+    events.push(event);
+  }
+  if (dropped.length) options.onDropped?.(dropped.length, dropped);
+  events.sort(compareFeedPositions);
+  return feedPage(events.slice(0, options.limit + 1), options.limit, encodeFeedPosition);
 }
 
 // ---------------------------------------------------------------------------------------
