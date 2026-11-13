@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HiveEventFeedError, readHiveEventFeed, type HiveEventFeedProgress } from '../src/feed/index.js';
+import { DEFAULT_MAX_PAGE_BYTES, HiveEventFeedError, readHiveEventFeed, type HiveEventFeedProgress } from '../src/feed/index.js';
 import { EVENT } from './fixtures/event.js';
 
 const FEED = '/api/hiveskills/v1/hive/events';
@@ -88,6 +88,9 @@ describe('readHiveEventFeed', () => {
   it('bounds the size of a page when asked', async () => {
     const big = () => page(Array.from({ length: 20 }, (_, index) => event(`e${index}`)), null);
     expect((await failure(readHiveEventFeed(feed([big]), FEED, { maxPageBytes: 200 }))).kind).toBe('malformed');
+    expect(DEFAULT_MAX_PAGE_BYTES).toBe(6 * 1024 * 1024);
+    expect((await readHiveEventFeed(feed([big]), FEED, { maxPageBytes: Infinity })).events).toHaveLength(20);
+    await expect(readHiveEventFeed(feed([big]), FEED, { maxPageBytes: 0 })).rejects.toThrow(RangeError);
     const ok = await readHiveEventFeed(feed([big]), FEED, { maxPageBytes: 100_000, signal: new AbortController().signal });
     expect(ok.events).toHaveLength(20);
     expect((await readHiveEventFeed(feed([big]), FEED, { maxPageBytes: 100_000 })).events).toHaveLength(20);

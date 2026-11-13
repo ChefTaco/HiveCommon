@@ -36,7 +36,9 @@ Fixes from a review of every module. No export was removed or renamed.
   - `/events`: `encodeFeedPosition()`, `decodeFeedPosition()`, `requireFeedPosition()`,
     `feedSince()` and `buildFeedPage()` for feeds ordered by `(occurredAt, id)`.
   - `/feed` (new, isomorphic): `readHiveEventFeed()`, a paging feed consumer that validates each
-    event on its own, and `HiveEventFeedError`.
+    event on its own, and `HiveEventFeedError`. A page larger than `maxPageBytes` is refused as
+    `malformed`; the default is 6 MiB (`DEFAULT_MAX_PAGE_BYTES`), about twice the largest valid
+    200-event page, and `Infinity` removes the bound.
   - `/contracts`: `generateRequestId()` (now with a fallback where `crypto.randomUUID` is
     missing), `readRequestId()`, `resolveRequestId()`, `readHeader()`, `rawHeader()` and
     `HeaderSource`, moved from `/context` (which still exports them) so a browser can use them;
