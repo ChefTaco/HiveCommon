@@ -255,7 +255,7 @@ export interface HiveEvent {
     readonly agentRef?: string;
     readonly nodeId?: string;
   };
-  /** Where a person can see the event: a same-origin console path of a product. */
+  /** Where a person can see the event: a same-origin UI path of a product. */
   readonly link: { readonly product: string; readonly path: string };
   /** The emitter's own reference to the record behind the event. */
   readonly sourceRef?: string;

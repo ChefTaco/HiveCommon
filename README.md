@@ -504,7 +504,7 @@ interface HiveEvent {
   id: string; product: string; type: string; severity: 'info' | 'warning' | 'critical';
   title: string; summary: string; occurredAt: string; // RFC 3339 UTC
   subject?: { actorId?: string; agentRef?: string; nodeId?: string };
-  link: { product: string; path: string };            // same-origin console path
+  link: { product: string; path: string };            // same-origin UI path
   sourceRef?: string;
 }
 ```
