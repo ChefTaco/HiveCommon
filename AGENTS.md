@@ -33,9 +33,9 @@ notes, or real user data, in code, tests, fixtures, docs, or commit messages:
 - **The conformance vectors are a contract.** Products run `test-vectors/oathweave/vectors.json`
   in their own tests. Add vectors freely; change an expected outcome only with a changelog entry
   that says why, and regenerate (`npm run vectors:generate`) only on purpose.
-- **`/contracts` and `/errors` are isomorphic.** No Node built-ins, no runtime dependencies,
-  nothing but each other. The browser UI vendors them. A test enforces this. `/fetch` and `/feed`
-  are isomorphic too and may import only the isomorphic modules.
+- **`/contracts`, `/errors`, `/fetch` and `/feed` are isomorphic.** No Node built-ins, no runtime
+  dependencies, and imports only from each other (`test/errors.test.ts` enforces this). HiveXUI,
+  the suite UI, imports `/contracts` and `/errors` in the browser.
 - **No secrets in output.** Error messages are fixed or sanitised and never echo tokens, webhook
   URLs or upstream bodies. Log lines go through `redact()`. Health checks hide error text unless
   `exposeErrors` is set.
@@ -44,11 +44,26 @@ notes, or real user data, in code, tests, fixtures, docs, or commit messages:
 - **Additive changes.** Exports, envelope fields and HiveEvent v1 fields are public API: add,
   never rename or remove, outside a major version.
 
+## Layout
+
+| Path | What it holds |
+| --- | --- |
+| `src/<subpath>/index.ts` | One directory per export: `oathweave`, `errors`, `health`, `context`, `registry`, `log`, `events`, `contracts`, `fetch`, `feed`, `secrets`, `hono`, `node-http` |
+| `src/oathweave/conformance.ts` | The `./oathweave/conformance` export (vector runner) |
+| `src/internal/` | Shared code that is not exported (bounded body reader) |
+| `test/` | Vitest suites, one per module, plus `fixtures/` |
+| `test-vectors/oathweave/` | Published conformance vectors and JWKS (`npm run vectors:generate`) |
+| `scripts/` | Package check, privacy and secret scans, Gitleaks wrapper, publish helpers |
+
+The README documents every export; update its module section when you add or change one.
+
 ## Ground rules
 
 - Node.js 24.22.3+ or 26.13.1+, ESM only, strict TypeScript (`noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`). Match the style of the file you edit.
-- Every subpath has its own entry in `package.json` `exports` and its own `src/<name>/index.ts`.
+- Every subpath has its own entry in `package.json` `exports` and its own `src/<name>/index.ts`
+  (`./oathweave/conformance` is `src/oathweave/conformance.ts`). `npm run pack:check` installs
+  the packed tarball and imports every export, so a new subpath needs no extra wiring there.
 - Validate every external input before use: configuration, tokens, HTTP responses and headers.
 
 ## Tests and gates
@@ -60,6 +75,10 @@ sending a change, run:
 ```bash
 npm run verify   # privacy tests, secret and private-data scans, typecheck, lint, test, build, pack
 ```
+
+Single steps: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:coverage` (CI runs it
+too), `npm run build`, `npm run pack:check`. The git hooks also run the pinned Gitleaks
+binary (`bash scripts/install-gitleaks.sh`, see CONTRIBUTING.md).
 
 ## Commits and releases
 
