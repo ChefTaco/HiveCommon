@@ -89,6 +89,16 @@ describe('envelope', () => {
     expect(parseHiveError(400, { error: { code: 'c', message: 'm', requestId: ' ok-1 ' } }).requestId).toBe('ok-1');
   });
 
+  it('trims a remote code in linear time on adversarial input', () => {
+    expect(parseHiveError(400, { error: { code: '__bad code!__', message: 'm' } }).code).toBe('bad_code');
+    expect(parseHiveError(400, { error: { code: ' __ ', message: 'm' } }).code).toBe('bad_request');
+    // A `/^_+|_+$/g` regex takes seconds on `a___…a` (quadratic); the linear trim is instant.
+    const started = performance.now();
+    expect(parseHiveError(400, { error: { code: `a${'_'.repeat(200_000)}a`, message: 'm' } }).code).toBe(`a${'_'.repeat(127)}`);
+    expect(parseHiveError(400, { error: { code: `a${' '.repeat(200_000)}!a`, message: 'm' } }).code).toBe('a_a');
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
   it('never leaks unexpected errors', () => {
     const onUnexpected = vi.fn();
     const secret = new Error('database password is hunter2');

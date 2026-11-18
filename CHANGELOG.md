@@ -6,6 +6,15 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- `/health`: `resolveHealthPath()` (and so `createHealth().handle()` and `/node-http`
+  `handleHealth()`) strips trailing slashes in one linear pass. The old `/\/+$/` regex
+  was quadratic on a request path such as `//…/x` (CodeQL `js/polynomial-redos`).
+- `/errors`: `parseHiveError()` trims leading and trailing `_` from a remote error code in linear
+  time. The old `/^_+|_+$/g` regex was quadratic on a code such as `a___…a`. Results are
+  unchanged.
+
 ## [0.5.0] - 2026-11-13
 
 Fixes from a review of every module. No export was removed or renamed.
