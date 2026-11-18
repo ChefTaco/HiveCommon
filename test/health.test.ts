@@ -146,6 +146,18 @@ describe('paths', () => {
     expect(healthPaths()).toEqual({ live: ['/health/live'], ready: ['/health/ready'] });
   });
 
+  it('strips trailing slashes in linear time on adversarial paths', () => {
+    expect(resolveHealthPath('/health/live///')).toBe('live');
+    expect(resolveHealthPath('//')).toBeUndefined();
+    expect(resolveHealthPath('/', { live: ['/'] })).toBe('live');
+    expect(resolveHealthPath('//', { live: [''] })).toBe('live');
+    // A `/\/+$/` regex takes seconds here (quadratic); the backwards scan is instant.
+    const started = performance.now();
+    expect(resolveHealthPath(`/${'/'.repeat(200_000)}x`)).toBeUndefined();
+    expect(resolveHealthPath(`/health/live${'/'.repeat(200_000)}`)).toBe('live');
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
   it('serves through createHealth', async () => {
     const health = createHealth({ aliases: true, checks: [{ name: 'db', check: () => false }] });
     expect((await health.handle('/healthz'))?.status).toBe(200);

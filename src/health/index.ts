@@ -180,13 +180,20 @@ export async function readiness(options: HealthOptions<object> = {}): Promise<He
 
 /** Which health endpoint a path names, including legacy aliases when enabled. */
 export function resolveHealthPath(pathname: string, aliases: HealthOptions['aliases'] = false): HealthKind | undefined {
-  const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+  const path = pathname.length > 1 ? trimTrailingSlashes(pathname) : pathname;
   if (path === HEALTH_PATHS.live) return 'live';
   if (path === HEALTH_PATHS.ready) return 'ready';
   const map = aliasMap(aliases);
   if (map.live.includes(path)) return 'live';
   if (map.ready.includes(path)) return 'ready';
   return undefined;
+}
+
+/** Drop every trailing `/` in one backwards pass (a `/\/+$/` regex is quadratic on `//…/x`). */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return value.slice(0, end);
 }
 
 /** All paths served for each kind, standard first. */

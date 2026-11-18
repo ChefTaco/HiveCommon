@@ -226,8 +226,17 @@ function cleanText(value: string, max = MAX_MESSAGE): string {
 
 /** A remote code is kept as sent (products compare against their own codes), but bounded and safe. */
 function cleanCode(value: string): string | undefined {
-  const cleaned = value.trim().replace(/[^A-Za-z0-9_.:-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, MAX_CODE);
+  const cleaned = trimUnderscores(value.trim().replace(/[^A-Za-z0-9_.:-]+/g, '_')).slice(0, MAX_CODE);
   return cleaned || undefined;
+}
+
+/** Drop leading and trailing `_` in linear time (a `/^_+|_+$/g` regex is quadratic on `a___…a`). */
+function trimUnderscores(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) === 0x5f) start += 1;
+  while (end > start && value.charCodeAt(end - 1) === 0x5f) end -= 1;
+  return value.slice(start, end);
 }
 
 /** A single token with no spaces is a code (`UNAUTHORIZED`, `invalid_grant`); prose is a message. */
