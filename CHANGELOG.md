@@ -6,6 +6,8 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-18
+
 ### Fixed
 
 - `/health`: `resolveHealthPath()` (and so `createHealth().handle()` and `/node-http`
@@ -226,7 +228,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.2.0...v0.3.0
