@@ -209,7 +209,7 @@ describe('parseHiveError legacy shapes', () => {
 
 describe('isomorphism', () => {
   it('the isomorphic modules import no Node built-ins and only each other', () => {
-    const isomorphic = ['errors', 'contracts', 'fetch', 'feed'];
+    const isomorphic = ['errors', 'contracts', 'fetch', 'feed', 'execution', 'retry', 'artifact', 'sse'];
     for (const name of isomorphic) {
       const source = readFileSync(new URL(`../src/${name}/index.ts`, import.meta.url), 'utf8');
       expect(source).not.toMatch(/from ['"](?:node:|fs|path|crypto|http|https|os|async_hooks)/);

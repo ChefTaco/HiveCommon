@@ -7,7 +7,7 @@ request IDs and trace context, read the Hive Registry, log safely and publish Hi
 - ESM only, TypeScript with `.d.ts` output, strict types.
 - One runtime dependency (`jose`); `hono` is an optional peer.
 - Each module is its own subpath, so a product loads only what it uses.
-- `/contracts`, `/errors`, `/fetch` and `/feed` are isomorphic, so the browser UI can use them too.
+- `/contracts`, `/errors`, `/fetch`, `/feed`, `/execution`, `/retry`, `/artifact` and `/sse` are isomorphic, so the browser UI can use them too.
 
 ```bash
 npm install @hivemagnus/hive-common
@@ -24,6 +24,10 @@ npm install @hivemagnus/hive-common
 | [`/log`](#log) | Structured JSON logger and `redact()` | Node |
 | [`/events`](#events) | HiveEvent feed helpers and the ChatterMost notifier | Node |
 | [`/feed`](#feed) | HiveEvent feed consumer | Node, browser |
+| [`/execution`](#execution) | Execution context v1: qualified references, `x-hive-execution`, child contexts | Node, browser |
+| [`/retry`](#retry) | Retry policies, backoff with deadlines, retryability, `x-hive-retry` | Node, browser |
+| [`/artifact`](#artifact) | Artifact transfer v2 vocabulary, rendition selection, `Repr-Digest`, byte ranges | Node, browser |
+| [`/sse`](#sse) | Follow a server-sent event stream with cursor reconnect | Node, browser |
 | [`/fetch`](#fetch) | Outbound fetch with a deadline and a response-size limit | Node, browser |
 | [`/secrets`](#secrets) | Constant-time comparison, digest-checked static tokens, bearer header parsing | Node |
 | [`/contracts`](#contracts) | Isomorphic types and validators, request IDs, `Retry-After` | Node, browser |
@@ -339,6 +343,103 @@ defaults to `trustInbound` (itself `true`). An internet-facing service that shou
 callers' traces passes `{ trustInboundRequestId: false, trustInboundTrace: true }`. The `/hono`
 `requestContext()` middleware and the `/node-http` `hiveHandler()` and `requestContextFor()` take
 the same options.
+
+`createRequestContext` also reads a valid inbound `x-hive-execution` into `context.execution`
+(`trustInboundExecution`, defaulting to `trustInbound`), and `outboundHeaders()` sends it on. A
+service may set `context.execution` itself once it knows which unit of work a request belongs to.
+
+### execution
+
+An execution context names the causal tree a unit of agent work belongs to, across products: a
+Studio request, the Ardent tasks it caused, their model attempts and the provider attempts behind
+those. It is **attribution only**: it never grants a tool, a memory scope, an artifact or any other
+access, and a reader that cannot validate one (another version, a malformed field) treats it as
+absent rather than rejecting the request.
+
+```ts
+import { formatExecutionRef, rootExecution, childExecution, executionHeaders, readExecutionHeader } from '@hivemagnus/hive-common/execution';
+
+const request = formatExecutionRef({ product: 'studio', instance: 'local', kind: 'request', id: messageId });
+const root = rootExecution(request, { requestId, deadlineMs: Date.now() + 6 * 3600_000 });
+const task = childExecution(root, formatExecutionRef({ product: 'ardent', instance: 'node-1.assistant', kind: 'task', id: taskId }), { attempt: 1 });
+await fetch(url, { headers: { ...executionHeaders(task) } });   // x-hive-execution: base64url(JSON)
+const inbound = readExecutionHeader(req.headers);               // ExecutionContext | undefined
+```
+
+The identifiers are deliberately distinct:
+
+| Identifier | Scope | Who sets it |
+| --- | --- | --- |
+| Request ID (`x-request-id`) | One hop | Each service (an edge may refuse the caller's) |
+| Trace (`traceparent`) | W3C spans | Each service, as a child span |
+| Execution `root` | The whole causal tree | The product where the work started |
+| Execution `parent` / `self` / `inputs` | One unit of work and what caused it | The product that owns the unit |
+| Task, step and attempt IDs | Product-local | Their owner; they leave it only as qualified references |
+
+A qualified reference is `hx1:<product>:<instance>:<kind>:<id>` (at most 256 characters), where
+`kind` is one of `request`, `task`, `mission`, `step`, `attempt`, `workflow`, `node`, `artifact` or
+`run`. The context is `{ v: 1, root, parent?, self?, inputs? (≤16), attempt?, request_id?,
+deadline_ms? }`; `deadline_ms` is absolute, and no layer retries past it. Over HTTP it travels in
+`x-hive-execution` (base64url JSON, at most 2 KiB; a larger context is dropped, never truncated);
+in A2A message metadata it is the `hiveExecution` object.
+
+### retry
+
+```ts
+import { retry, backoffDelay, classifyRetry, readRetrySignal, RETRY_HEADER } from '@hivemagnus/hive-common/retry';
+
+const value = await retry(attempt => callPeer(attempt), {
+  policy: { maxAttempts: 3, baseMs: 250, maxMs: 4000, jitter: 'equal', maxRetryAfterMs: 10_000 },
+  deadlineMs: context.execution?.deadline_ms, signal,
+  classify: error => ({ retry: classifyRetry(failureOf(error)) === 'retryable', retryAfterMs: retryAfterOf(error) }),
+  onAttempt: ({ attempt, reason, delayMs }) => journal('retry', { attempt, reason, delayMs }),
+});
+```
+
+`backoffDelay(attempt, policy, { retryAfterMs, deadlineMs })` returns the wait before the next
+attempt, or `null` when the attempts are used up, the peer asked for longer than
+`maxRetryAfterMs`, or the wait would reach the deadline. `classifyRetry()` returns `retryable`
+(408, 425, 429, 5xx or a network failure before any response byte was consumed), `permanent`,
+`unknown_effect` or `aborted`. These helpers decide when another attempt may start; whether an
+operation may be repeated at all stays with its owner, which passes `effect: 'none' | 'idempotent'
+| 'unknown'`. An unknown effect is never retried.
+
+Across layers: a service that already retried a failure answers `x-hive-retry: exhausted`
+(`none` when it did not retry), and the caller does not retry it again; together with the
+execution deadline this keeps nested retries from multiplying.
+
+### artifact
+
+```ts
+import { selectRendition, ARTIFACT_TRANSFER_V2_URN, formatReprDigest, parseByteRange } from '@hivemagnus/hive-common/artifact';
+
+const preview = selectRendition(renditions, { purpose: 'display', needsAlpha: true, maxBytes: 4 << 20 });
+const original = selectRendition(renditions, { purpose: 'download' });   // always the original
+```
+
+An original is never rewritten: a preview or model-input rendition is a separate artifact with
+its own digest. `display` prefers a `preview` and `model_input` a `model_input` rendition, each
+falling back to the original. Transfer v2 runtimes advertise `urn:hive:artifact-transfer:2`, serve
+`Range` requests with `Repr-Digest` (`formatReprDigest()`, `parseReprDigest()`), and report
+`TRANSFER_REQUIRES_V2`, `DIGEST_MISMATCH`, `TRANSFER_TOO_LARGE` or `TRANSFER_SOURCE_GONE`
+(`ARTIFACT_TRANSFER_ERRORS`) when a transfer cannot complete.
+
+### sse
+
+```ts
+import { followSse } from '@hivemagnus/hive-common/sse';
+
+const { cursor } = await followSse(`${base}/api/v1/tasks/${id}/stream`, {
+  headers: async () => ({ authorization: `Bearer ${await token()}` }),
+  after: savedCursor, cursorParam: 'after', signal,
+  onEvent: event => handle(event), isTerminal: event => event.event === 'task.done',
+});
+```
+
+Works in Node and browsers (it uses `fetch`, so unlike `EventSource` it can send headers). After a
+dropped or rotated connection it reconnects with the last event ID (`Last-Event-ID`, plus the
+`cursorParam` query when given), backing off after failed connections. A 4xx other than 408 and
+429 throws `SseStatusError`; `maxFailures` (8) consecutive failures end the follow.
 
 ### registry
 
