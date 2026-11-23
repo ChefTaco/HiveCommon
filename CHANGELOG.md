@@ -6,6 +6,24 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-23
+
+### Added
+
+- `/execution`: execution context v1 — qualified references (`hx1:<product>:<instance>:<kind>:<id>`),
+  `validateExecutionContext()`, `rootExecution()`, `childExecution()`, the `x-hive-execution`
+  header (`executionHeaders()`, `readExecutionHeader()`) and the `hiveExecution` A2A metadata key.
+  Attribution only; an unsupported version is treated as absent.
+- `/retry`: `RetryPolicy`, `backoffDelay()` with jitter, `Retry-After` and deadlines,
+  `classifyRetry()`, `retry()`, `sleepAbortable()`, `RetryExhaustedError` and the `x-hive-retry`
+  signal (`readRetrySignal()`).
+- `/artifact`: artifact transfer v2 constants, `selectRendition()`, `formatReprDigest()`,
+  `parseReprDigest()` and `parseByteRange()`.
+- `/sse`: `followSse()`, a fetch-based server-sent event follower with `Last-Event-ID` reconnect,
+  and `parseSseBlock()`.
+- `/context`: `RequestContext.execution`, read from a valid inbound `x-hive-execution`
+  (`trustInboundExecution`) and sent by `outboundHeaders()`.
+
 ## [0.5.1] - 2026-11-18
 
 ### Fixed
@@ -228,7 +246,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.3.0...v0.4.0

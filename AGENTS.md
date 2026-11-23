@@ -33,9 +33,10 @@ notes, or real user data, in code, tests, fixtures, docs, or commit messages:
 - **The conformance vectors are a contract.** Products run `test-vectors/oathweave/vectors.json`
   in their own tests. Add vectors freely; change an expected outcome only with a changelog entry
   that says why, and regenerate (`npm run vectors:generate`) only on purpose.
-- **`/contracts`, `/errors`, `/fetch` and `/feed` are isomorphic.** No Node built-ins, no runtime
-  dependencies, and imports only from each other (`test/errors.test.ts` enforces this). HiveXUI,
-  the suite UI, imports `/contracts` and `/errors` in the browser.
+- **`/contracts`, `/errors`, `/fetch`, `/feed`, `/execution`, `/retry`, `/artifact` and `/sse` are
+  isomorphic.** No Node built-ins, no runtime dependencies, and imports only from each other
+  (`test/errors.test.ts` enforces this). HiveXUI, the suite UI, imports `/contracts` and `/errors`
+  in the browser.
 - **No secrets in output.** Error messages are fixed or sanitised and never echo tokens, webhook
   URLs or upstream bodies. Log lines go through `redact()`. Health checks hide error text unless
   `exposeErrors` is set.
@@ -48,7 +49,7 @@ notes, or real user data, in code, tests, fixtures, docs, or commit messages:
 
 | Path | What it holds |
 | --- | --- |
-| `src/<subpath>/index.ts` | One directory per export: `oathweave`, `errors`, `health`, `context`, `registry`, `log`, `events`, `contracts`, `fetch`, `feed`, `secrets`, `hono`, `node-http` |
+| `src/<subpath>/index.ts` | One directory per export: `oathweave`, `errors`, `health`, `context`, `registry`, `log`, `events`, `contracts`, `fetch`, `feed`, `execution`, `retry`, `artifact`, `sse`, `secrets`, `hono`, `node-http` |
 | `src/oathweave/conformance.ts` | The `./oathweave/conformance` export (vector runner) |
 | `src/internal/` | Shared code that is not exported (bounded body reader) |
 | `test/` | Vitest suites, one per module, plus `fixtures/` |

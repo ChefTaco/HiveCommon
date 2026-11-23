@@ -1,6 +1,6 @@
 {
   "name": "@hivemagnus/hive-common",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Shared server kit for the Hive:Magnus suite: Oathweave token verification, error envelope, health, request context, registry client, logging, events and framework adapters",
   "keywords": [
     "hive",
@@ -69,6 +69,22 @@
     "./feed": {
       "types": "./dist/feed/index.d.ts",
       "default": "./dist/feed/index.js"
+    },
+    "./execution": {
+      "types": "./dist/execution/index.d.ts",
+      "default": "./dist/execution/index.js"
+    },
+    "./retry": {
+      "types": "./dist/retry/index.d.ts",
+      "default": "./dist/retry/index.js"
+    },
+    "./artifact": {
+      "types": "./dist/artifact/index.d.ts",
+      "default": "./dist/artifact/index.js"
+    },
+    "./sse": {
+      "types": "./dist/sse/index.d.ts",
+      "default": "./dist/sse/index.js"
     },
     "./secrets": {
       "types": "./dist/secrets/index.d.ts",

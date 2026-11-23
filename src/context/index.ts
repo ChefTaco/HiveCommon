@@ -5,6 +5,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { generateRequestId, HIVE_HEADERS, rawHeader, readHeader, readRequestId, type HeaderSource } from '../contracts/index.js';
 import { HiveError } from '../errors/index.js';
+import { executionHeaders, readExecutionHeader, type ExecutionContext } from '../execution/index.js';
 
 // Request IDs and header reading are isomorphic and live in `/contracts`; they stay exported here.
 export {
@@ -137,6 +138,12 @@ export interface RequestContext {
   principal?: unknown;
   /** Extra fields that loggers add to every line for this request. */
   readonly bindings: Record<string, unknown>;
+  /**
+   * The execution context this request belongs to (attribution only, never authorization).
+   * Set from a valid inbound `x-hive-execution` when trusted, or by the service itself.
+   * `outboundHeaders` propagates it.
+   */
+  execution?: ExecutionContext;
 }
 
 export interface CreateRequestContextOptions {
@@ -157,6 +164,12 @@ export interface CreateRequestContextOptions {
    * `trustInboundRequestId: false` to join a caller's trace while choosing its own request IDs.
    */
   readonly trustInboundTrace?: boolean;
+  /**
+   * Read an inbound `x-hive-execution` into `execution`. Defaults to `trustInbound`. An invalid
+   * or unsupported context is ignored. The context is attribution only, so an edge service may
+   * accept it to record where a call came from while choosing its own request IDs.
+   */
+  readonly trustInboundExecution?: boolean;
   readonly generateRequestId?: () => string;
   readonly now?: () => number;
 }
@@ -165,6 +178,7 @@ export function createRequestContext(headers: HeaderSource, options: CreateReque
   const trust = options.trustInbound ?? true;
   const trustRequestId = options.trustInboundRequestId ?? trust;
   const trustTrace = options.trustInboundTrace ?? trust;
+  const execution = (options.trustInboundExecution ?? trust) ? readExecutionHeader(headers) : undefined;
   const requestId = (trustRequestId ? readRequestId(headers) : undefined) ?? (options.generateRequestId ?? generateRequestId)();
   const parentTrace = trustTrace ? parseTraceparent(readHeader(headers, HIVE_HEADERS.traceparent)) : undefined;
   const rawState = parentTrace ? readHeader(headers, HIVE_HEADERS.tracestate)?.trim() : undefined;
@@ -177,6 +191,7 @@ export function createRequestContext(headers: HeaderSource, options: CreateReque
     tracestate,
     startedAt: options.now ? options.now() : Date.now(),
     bindings: {},
+    ...(execution ? { execution } : {}),
   };
 }
 
@@ -199,7 +214,8 @@ export function currentRequestId(): string | undefined {
 
 /**
  * Headers to send to a peer service so it joins this request: `x-request-id`, `traceparent`
- * (with this service's span as the parent) and `tracestate`. Empty outside a request.
+ * (with this service's span as the parent), `tracestate` and, when the request has one,
+ * `x-hive-execution`. Empty outside a request.
  */
 export function outboundHeaders(context: RequestContext | undefined = getRequestContext()): Record<string, string> {
   if (!context) return {};
@@ -207,5 +223,6 @@ export function outboundHeaders(context: RequestContext | undefined = getRequest
     [HIVE_HEADERS.requestId]: context.requestId,
     [HIVE_HEADERS.traceparent]: formatTraceparent(context.trace),
     ...(context.tracestate ? { [HIVE_HEADERS.tracestate]: context.tracestate } : {}),
+    ...executionHeaders(context.execution),
   };
 }
