@@ -15,6 +15,7 @@ import {
 import { HiveError } from '../errors/index.js';
 import { endpointProblem } from '../oathweave/endpoint.js';
 import { redactText } from '../log/redact.js';
+import { backoffDelay, sleepAbortable, type RetryPolicy } from '../retry/index.js';
 
 export {
   compareFeedPositions,
@@ -366,7 +367,13 @@ export function formatChatterMostMessage(event: HiveEvent, options: { readonly l
   return `${title}${summary}${link}`.slice(0, 16_000);
 }
 
-function retryAfterMs(response: Response): number | undefined {
+/**
+ * The notifier's `Retry-After` reading: delta-seconds, or anything `Date.parse` reads as a date
+ * (an HTTP date, and also values such as `1.5` or `2, 3`, which count as past dates and so mean
+ * no wait). It is kept instead of `/contracts` `retryAfterMs()`, which refuses those values, so
+ * that delivery timing does not change; switching is a behaviour change for a minor release.
+ */
+function lenientRetryAfterMs(response: Response): number | undefined {
   const value = response.headers.get('retry-after');
   if (!value) return undefined;
   if (/^\d+$/.test(value)) return Number(value) * 1000;
@@ -396,7 +403,7 @@ export class ChatterMostNotifier {
     this.#options = options;
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
     this.#dedupe = options.dedupe ?? new MemoryDedupeStore();
-    this.#sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? (ms => sleepAbortable(ms));
     this.#random = options.random ?? Math.random;
   }
 
@@ -424,8 +431,11 @@ export class ChatterMostNotifier {
     if (!await this.#dedupe.claim(key, this.#options.dedupeTtlMs ?? 24 * 60 * 60_000)) return { status: 'duplicate', attempts: 0 };
 
     const retries = this.#options.retries ?? 3;
-    const base = this.#options.backoffMs ?? 500;
     const max = this.#options.maxBackoffMs ?? 8_000;
+    // Full jitter over a factor in [0.5, 1] is equal jitter computed as `delay × factor`, the
+    // notifier's own rounding; backoffDelay's `equal` mode rounds differently at half a millisecond.
+    const policy: RetryPolicy = { maxAttempts: retries + 1, baseMs: this.#options.backoffMs ?? 500, maxMs: max, jitter: 'full' };
+    const jitter = () => 0.5 + this.#random() / 2;
     let lastError = 'failed';
     let lastStatus: number | undefined;
     let attempts = 0;
@@ -444,16 +454,18 @@ export class ChatterMostNotifier {
         if (response.ok) return { status: 'sent', attempts: attempt };
         lastStatus = response.status;
         lastError = `HTTP ${response.status}`;
-        // Other 4xx mean the request itself is wrong; repeating it cannot help.
+        // Other 4xx mean the request itself is wrong; repeating it cannot help. Every 5xx is
+        // retried (not only classifyRetry()'s transient set), and 425 is not.
         if (response.status !== 408 && response.status !== 429 && response.status < 500) break;
-        wait = retryAfterMs(response);
+        wait = lenientRetryAfterMs(response);
       } catch (error) {
         lastStatus = undefined;
         lastError = error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'network error';
       }
       if (attempt <= retries) {
-        const backoff = Math.min(max, base * 2 ** (attempt - 1));
-        await this.#sleep(Math.min(max, wait ?? Math.round(backoff * (0.5 + this.#random() / 2))));
+        // A Retry-After replaces the backoff (it is not a floor) and is capped, never refused.
+        const delay = wait ?? backoffDelay(attempt, policy, { random: jitter });
+        if (delay !== null) await this.#sleep(Math.min(max, delay));
       }
     }
     await this.#dedupe.release(key);
