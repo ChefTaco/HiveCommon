@@ -194,6 +194,41 @@ describe('ChatterMostNotifier', () => {
     expect(sleeps[1]).toBe(20);
   });
 
+  it('waits exactly as long as an HTTP-date Retry-After asks, capped, instead of the backoff', async () => {
+    const now = Date.UTC(2026, 10, 24, 12, 0, 0);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const random = vi.fn(() => 1);
+      const { instance, calls, sleeps } = notifier({ backoffMs: 100, maxBackoffMs: 45_000, retries: 3, random }, [
+        new Response('', { status: 503, headers: { 'retry-after': new Date(now + 30_000).toUTCString() } }),
+        new Response('', { status: 429, headers: { 'retry-after': new Date(now - 60_000).toUTCString() } }),
+        new Response('', { status: 503, headers: { 'retry-after': 'Thu, 24 Dec 2026 12:00:00 GMT' } }),
+        new Response('ok'),
+      ]);
+      expect(await instance.notify(EVENT)).toEqual({ status: 'sent', attempts: 4 });
+      expect(calls).toHaveLength(4);
+      // A date in the past means no wait; one past the cap waits the cap and retrying goes on.
+      expect(sleeps).toEqual([30_000, 0, 45_000]);
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('retries every 5xx but not 425, and rounds its jitter as before', async () => {
+    const { instance, calls, sleeps } = notifier({ backoffMs: 1, maxBackoffMs: 100, retries: 8, random: () => 0.13 }, [
+      new Response('', { status: 501 }), new Response('', { status: 505 }), new Response('', { status: 599 }),
+      new Response('', { status: 500 }), new Response('', { status: 502 }), new Response('', { status: 504 }),
+      new Response('', { status: 503 }), new Response('', { status: 408 }), new Response('ok'),
+    ]);
+    expect(await instance.notify(EVENT)).toEqual({ status: 'sent', attempts: 9 });
+    expect(calls).toHaveLength(9);
+    expect(sleeps).toEqual([1, 1, 2, 5, 9, 18, 36, 56]);
+    const early = notifier({}, [new Response('', { status: 425 }), new Response('ok')]);
+    expect(await early.instance.notify(EVENT)).toEqual({ status: 'failed', attempts: 1, error: 'HTTP 425', httpStatus: 425 });
+    expect(early.sleeps).toEqual([]);
+  });
+
   it('does not retry other 4xx, and releases the claim so a later call can retry', async () => {
     const { instance, calls } = notifier({}, [new Response('', { status: 400 }), new Response('ok')]);
     expect(await instance.notify(EVENT)).toEqual({ status: 'failed', attempts: 1, error: 'HTTP 400', httpStatus: 400 });

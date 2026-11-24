@@ -6,6 +6,19 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-24
+
+### Changed
+
+- `/events`: `ChatterMostNotifier.notify()` computes its backoff with `/retry` `backoffDelay()`
+  and its default `sleep` is `sleepAbortable()`. Delivery behaviour is unchanged: the same
+  attempts, delays (jitter rounding included), retried statuses (408, 429 and every 5xx; not 425)
+  and results. `Retry-After` is read as before, delta-seconds or an HTTP date, replacing the
+  backoff and capped at `maxBackoffMs`; the notifier keeps its own lenient reading rather than
+  `/contracts` `retryAfterMs()`, which refuses values such as `1.5` that the notifier treats as
+  no wait. Only a negative `backoffMs`, which was never valid, now reaches `sleep` as 0 rather
+  than a negative number; the real timer waited the same either way.
+
 ## [0.6.0] - 2026-11-23
 
 ### Added
@@ -246,7 +259,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.4.0...v0.5.0
