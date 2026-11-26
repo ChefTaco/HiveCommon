@@ -6,12 +6,18 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-26
+
 ### Added
 
 - `/oathweave`: the recent-authentication check takes `authenticatedAfter` (epoch seconds): when
   the product started a `prompt=login` re-authentication. An `auth_time` earlier than that,
   beyond the clock tolerance, is refused as `REAUTH_STALE` with reason `before_request`, even
   inside the window.
+
+### Upgrade notes
+
+- Additive: a new optional check field, no dependency or behaviour change for existing callers.
 
 ## [0.9.0] - 2026-11-26
 
@@ -396,7 +402,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.1...v0.7.0
