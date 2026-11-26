@@ -26,6 +26,11 @@ import {
   type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions,
 } from '../internal/body.js';
 
+import {
+  limitRequest, rateLimitHeaders, resolveClientAddress, resolveTrustedProxies,
+  type ClientAddress, type RateLimitMiddlewareOptions, type RateLimitResult, type TrustedProxies,
+} from '../rate-limit/index.js';
+
 export { DEFAULT_MAX_BODY_BYTES, type BodyProblem, type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions } from '../internal/body.js';
 
 /** The request context for `req`, created on first use and cached on the request. */
@@ -257,5 +262,52 @@ export function hiveHandler(handler: Handler, options: HiveHandlerOptions = {}):
         }
       }
     });
+  };
+}
+
+// ---------------------------------------------------------------------------------------
+// Client address and rate limiting
+
+/** The client address of `req`, believing `X-Forwarded-For` only from `trusted` proxies. */
+export function clientAddressOf(req: IncomingMessage, trusted: TrustedProxies): ClientAddress {
+  return resolveClientAddress({ peer: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'], trusted });
+}
+
+export interface NodeRateLimitOptions extends RateLimitMiddlewareOptions {
+  /** The key after `prefix`. By default the client address (`addressKey()`); undefined lets the request through. */
+  readonly key?: (req: IncomingMessage, client: ClientAddress) => string | undefined | Promise<string | undefined>;
+  /** Tokens a request spends. 1. */
+  readonly cost?: number | ((req: IncomingMessage) => number);
+}
+
+export interface NodeRateLimit {
+  /**
+   * Spend for one request. Throws a 429 `HiveError` (`rate_limited`, `Retry-After`,
+   * `details.retryAfterSeconds`) when refused: inside `hiveHandler()` it is answered as the
+   * envelope. Returns the client and the result (undefined when `key` skipped the request).
+   */
+  (req: IncomingMessage, res?: ServerResponse): Promise<{ readonly client: ClientAddress; readonly result: RateLimitResult | undefined }>;
+}
+
+/**
+ * A per-request rate limit for `node:http` handlers.
+ *
+ *   const limit = rateLimit({ limiter: createRateLimiter({ limit: 10, windowMs: 60_000 }), trustedProxies: process.env.TRUSTED_PROXIES });
+ *   createServer(hiveHandler(async (req, res) => { await limit(req, res); ... }));
+ */
+export function rateLimit(options: NodeRateLimitOptions): NodeRateLimit {
+  const trusted = resolveTrustedProxies(options.trustedProxies);
+  return async (req, res) => {
+    const cost = typeof options.cost === 'function' ? options.cost(req) : options.cost;
+    const outcome = await limitRequest(
+      options, trusted,
+      { peer: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'] },
+      options.key ? client => (options.key as NonNullable<NodeRateLimitOptions['key']>)(req, client) : undefined,
+      cost,
+    );
+    if (outcome.result && options.headers && res && !res.headersSent) {
+      for (const [name, value] of Object.entries(rateLimitHeaders(outcome.result))) res.setHeader(name, value);
+    }
+    return outcome;
   };
 }

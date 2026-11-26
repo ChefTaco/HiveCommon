@@ -8,6 +8,16 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ### Added
 
+- `/rate-limit` (new, Node): `resolveClientAddress()`, which believes `X-Forwarded-For` only from
+  a trusted proxy and reads it from the right; `trustedProxies()` (addresses, CIDR ranges and the
+  `loopback`, `private` and `linklocal` presets); `normalizeIpAddress()` and `addressKey()`
+  (IPv6 grouped by /64); `createRateLimiter()`, a keyed in-memory token bucket with a key cap;
+  the `RateLimitStore` interface for a shared store; `rateLimitError()` (429 `rate_limited`,
+  `Retry-After`, `details.retryAfterSeconds`), `rateLimitHeaders()` and `enforceRateLimit()`.
+- `/hono`: `rateLimit()` middleware, `clientAddress()`, `getClientAddress()` and the
+  `hiveClientAddress` context variable.
+- `/node-http`: `rateLimit()` and `clientAddressOf()`.
+
 - `/sse`: `followSse()` options `maxEventBytes` (default 1 MiB, `DEFAULT_MAX_SSE_EVENT_BYTES`)
   and `idleTimeoutMs` (off by default), and the errors `SseHandlerError`,
   `SseEventTooLargeError` and `SseIdleTimeoutError`. The server's `retry:` field is honoured.
