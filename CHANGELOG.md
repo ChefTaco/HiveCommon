@@ -6,6 +6,8 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-26
+
 ### Added
 
 - `/rate-limit` (new, Node): `resolveClientAddress()`, which believes `X-Forwarded-For` only from
@@ -335,7 +337,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.0...v0.5.1
