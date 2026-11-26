@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createCaFetch, createRegistryClient } from '../src/registry/index.js';
 import { HiveError } from '../src/errors/index.js';
+import { boundedFetch, readBodyBounded } from '../src/fetch/index.js';
 import { stubFetch } from './helpers.js';
 
 const BASE = 'https://hive.example.com/api/registry';
@@ -107,6 +108,24 @@ describe('reads', () => {
     const { registry } = client({ [`${BASE}/v1/installation`]: () => new Response('<html>') });
     await expect(registry.installation()).rejects.toMatchObject({ code: 'invalid_registry_response' });
   });
+
+  it('bounds every response it reads', async () => {
+    const big = { schema: 1, id: 'install', products: Array.from({ length: 200 }, (_, index) => `product-${index}`) };
+    const { registry } = client({ [`${BASE}/v1/installation`]: () => Response.json(big) }, { maxResponseBytes: 512 });
+    await expect(registry.installation()).rejects.toMatchObject({ code: 'invalid_registry_response', status: 502 });
+    // An oversized error body still gives the status, without the body.
+    const failing = client({ [`${BASE}/v1/installation`]: () => new Response('x'.repeat(2048), { status: 503, headers: { 'retry-after': '5', 'x-request-id': 'req-1' } }) }, { maxResponseBytes: 512 });
+    await expect(failing.registry.installation()).rejects.toMatchObject({ status: 503, code: 'unavailable', requestId: 'req-1', headers: { 'retry-after': '5' } });
+    expect(() => createRegistryClient({ baseUrl: BASE, maxResponseBytes: -1 })).toThrow(RangeError);
+  });
+
+  it('passes a transport failure while reading a success body through unchanged', async () => {
+    const broken = () => new Response(new ReadableStream({ pull(controller) { controller.error(new TypeError('socket closed')); } }));
+    const { registry } = client({ [`${BASE}/v1/installation`]: broken });
+    await expect(registry.installation()).rejects.toThrow('socket closed');
+    const failing = client({ [`${BASE}/v1/installation`]: () => new Response(new ReadableStream({ pull(controller) { controller.error(new TypeError('reset')); } }), { status: 500 }) });
+    await expect(failing.registry.installation()).rejects.toMatchObject({ status: 500, code: 'internal' });
+  });
 });
 
 describe('endpoints and trust', () => {
@@ -163,6 +182,7 @@ describe.skipIf(!hasOpenssl)('createCaFetch against a loopback TLS server', () =
   let server: Server;
   let url = '';
   let cert = '';
+  let endlessClosed = false;
 
   beforeAll(async () => {
     // A throwaway self-signed certificate, generated per run and deleted afterwards.
@@ -175,6 +195,16 @@ describe.skipIf(!hasOpenssl)('createCaFetch against a loopback TLS server', () =
       if (req.url === '/redirect') { res.writeHead(302, { location: '/elsewhere' }); res.end(); return; }
       if (req.url === '/slow') { setTimeout(() => res.end('late'), 2000); return; }
       if (req.url === '/empty') { res.writeHead(204); res.end(); return; }
+      if (req.url === '/endless') {
+        // Writes until the client goes away: a client that buffered the whole body would never return.
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        const chunk = Buffer.alloc(16_384, 120);
+        const write = (): void => { while (!res.destroyed && res.write(chunk)); if (!res.destroyed) res.once('drain', write); };
+        res.on('close', () => { endlessClosed = true; });
+        write();
+        return;
+      }
+      if (req.url === '/trickle') { res.writeHead(200); res.write('start'); setTimeout(() => res.end('late'), 2000); return; }
       let body = '';
       req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
       req.on('end', () => {
@@ -217,6 +247,22 @@ describe.skipIf(!hasOpenssl)('createCaFetch against a loopback TLS server', () =
     await expect(createCaFetch({ ca: cert })(`${url}/echo`, { method: 'POST', body: new Blob(['x']) })).rejects.toThrow(/bodies/);
     expect(() => createCaFetch({ ca: 'not a cert' })).toThrow(/PEM/);
     expect(() => createCaFetch({ ca: [] })).toThrow(/PEM/);
+  });
+
+  it('streams the body, so a bounded reader stops an endless response', async () => {
+    const response = await createCaFetch({ ca: cert })(`${url}/endless`);
+    expect(response.status).toBe(200);
+    await expect(readBodyBounded(response, 100_000)).rejects.toMatchObject({ reason: 'response_too_large' });
+    await expect.poll(() => endlessClosed).toBe(true);
+    const bounded = boundedFetch(`${url}/endless`, {}, { fetch: createCaFetch({ ca: cert, timeoutMs: 0 }), maxResponseBytes: 50_000 });
+    await expect(bounded).rejects.toMatchObject({ reason: 'response_too_large' });
+  });
+
+  it('applies its deadline to the body as well, and validates it', async () => {
+    const response = await createCaFetch({ ca: cert, timeoutMs: 200 })(`${url}/trickle`);
+    expect(response.status).toBe(200);
+    await expect(response.text()).rejects.toThrow();
+    expect(() => createCaFetch({ ca: cert, timeoutMs: -1 })).toThrow(RangeError);
   });
 
   it('times out and honours abort signals', async () => {

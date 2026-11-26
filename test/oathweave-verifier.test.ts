@@ -4,6 +4,7 @@ import {
   createOathweaveVerifier,
   isOathweaveError,
   OathweaveError,
+  OATHWEAVE_USERINFO_MAX_BYTES,
   parseBearerToken,
   type OathweaveFailureReason,
   type OathweaveVerifierOptions,
@@ -522,6 +523,8 @@ describe('online session check', () => {
     expect(await reason(verifier({ userinfoUrl: USERINFO_URL, fetch: userinfo(undefined, 502).fetch }).verify(await mint(keys, userClaims())))).toBe('identity_unavailable');
     const throwing = stubFetch({ [USERINFO_URL]: () => { throw new TypeError('down'); } });
     expect(await reason(verifier({ userinfoUrl: USERINFO_URL, fetch: throwing.fetch }).verify(await mint(keys, userClaims())))).toBe('identity_unavailable');
+    const huge = stubFetch({ [USERINFO_URL]: () => Response.json({ sub: 'user-subject', name: 'x'.repeat(OATHWEAVE_USERINFO_MAX_BYTES) }) });
+    expect(await reason(verifier({ userinfoUrl: USERINFO_URL, fetch: huge.fetch }).verify(await mint(keys, userClaims())))).toBe('identity_unavailable');
     const notJson = stubFetch({ [USERINFO_URL]: () => new Response('<html>', { status: 200 }) });
     expect(await reason(verifier({ userinfoUrl: USERINFO_URL, fetch: notJson.fetch }).verify(await mint(keys, userClaims())))).toBe('identity_unavailable');
   });

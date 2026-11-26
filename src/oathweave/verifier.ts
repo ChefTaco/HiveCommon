@@ -30,6 +30,7 @@ import {
 } from './claims.js';
 import { assertOathweaveEndpoint, nativeIssuerList, type EndpointOptions } from './endpoint.js';
 import { OathweaveError } from './errors.js';
+import { readJsonBounded } from '../fetch/index.js';
 
 export { OATHWEAVE_MAX_LIFETIME_SEC } from './claims.js';
 export { OATHWEAVE_NATIVE_ISSUER_PATTERN } from './endpoint.js';
@@ -42,6 +43,8 @@ export const OATHWEAVE_STREAM_RECHECK_MS = 5_000;
 export const OATHWEAVE_FAILED_CHECK_TTL_MS = 2_000;
 export const OATHWEAVE_SESSION_CACHE_MAX = 5_000;
 export const OATHWEAVE_REQUEST_TIMEOUT_MS = 3_000;
+/** The largest userinfo response read. A real one is well under 1 KiB. */
+export const OATHWEAVE_USERINFO_MAX_BYTES = 65_536;
 export const OATHWEAVE_DEFAULT_CLOCK_TOLERANCE_SEC = 30;
 /** Longest accepted compact token. Real Oathweave tokens are well under 4 KiB. */
 export const OATHWEAVE_MAX_TOKEN_LENGTH = 16_384;
@@ -246,11 +249,13 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
 
   async function fetchDisplayName(token: string, subject: string): Promise<string> {
     let response: Response;
+    // One deadline for the request and its body, so a slow body cannot outlast it.
+    const signal = AbortSignal.timeout(timeoutMs);
     try {
       response = await request(userinfoUrl as string, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
         redirect: 'error',
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
     } catch (error) {
       throw new OathweaveError('identity_unavailable', { cause: error });
@@ -259,7 +264,7 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
     if (!response.ok) throw new OathweaveError('identity_unavailable');
     let user: unknown;
     try {
-      user = await response.json();
+      user = await readJsonBounded(response, OATHWEAVE_USERINFO_MAX_BYTES, { signal });
     } catch (error) {
       throw new OathweaveError('identity_unavailable', { cause: error });
     }

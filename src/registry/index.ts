@@ -3,8 +3,10 @@
  * to reach each product. See the Hive repository's `docs/hive-registry-api.md`.
  */
 import { request as httpsRequest } from 'node:https';
+import { Readable } from 'node:stream';
 import { isProductId } from '../contracts/index.js';
-import { HiveError, parseHiveErrorResponse } from '../errors/index.js';
+import { HiveError, parseHiveError } from '../errors/index.js';
+import { DEFAULT_MAX_RESPONSE_BYTES, isBoundedFetchError, parseJsonBytes, readBodyBounded } from '../fetch/index.js';
 import { isLoopbackHost } from '../oathweave/endpoint.js';
 
 // ---------------------------------------------------------------------------------------
@@ -105,18 +107,29 @@ export interface ProductEndpoint {
 export interface CaFetchOptions {
   /** PEM CA certificate(s) to trust in addition to nothing else: the system store is not used. */
   readonly ca: string | readonly string[];
+  /**
+   * Deadline for the request and its response body together, combined with the caller's
+   * `signal`. 15 000 ms; `0` or `Infinity` sets none (for a long-lived stream, pass a `signal`).
+   */
   readonly timeoutMs?: number;
 }
+
+/** The default `createCaFetch()` deadline. */
+export const DEFAULT_CA_FETCH_TIMEOUT_MS = 15_000;
 
 /**
  * A minimal `fetch` over `node:https` that trusts only the given CA. Supports what this
  * package's clients need: any method, headers, string or byte bodies, `signal`; redirects are
- * returned, never followed. For anything more, inject your own fetch (for example undici's
- * with a custom dispatcher).
+ * returned, never followed. The response resolves once its headers arrive and its body is a
+ * stream that is read on demand, never buffered here, so `/fetch` `readBodyBounded()` (and
+ * `boundedFetch({ fetch: caFetch })`) stop an oversized body as it arrives. For anything more,
+ * inject your own fetch (for example undici's with a custom dispatcher).
  */
 export function createCaFetch(options: CaFetchOptions): typeof fetch {
   const ca = typeof options.ca === 'string' ? [options.ca] : [...options.ca];
   if (!ca.length || ca.some(pem => !pem.includes('-----BEGIN CERTIFICATE-----'))) throw new TypeError('ca must be PEM certificates');
+  const timeoutMs = options.timeoutMs ?? DEFAULT_CA_FETCH_TIMEOUT_MS;
+  if (typeof timeoutMs !== 'number' || Number.isNaN(timeoutMs) || timeoutMs < 0) throw new RangeError('timeoutMs must be a non-negative number');
   return (input, init) => new Promise<Response>((resolve, reject) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     if (url.protocol !== 'https:') { reject(new TypeError('createCaFetch only supports https URLs')); return; }
@@ -126,23 +139,23 @@ export function createCaFetch(options: CaFetchOptions): typeof fetch {
     if (body !== undefined && body !== null && typeof body !== 'string' && !(body instanceof Uint8Array)) {
       reject(new TypeError('createCaFetch supports string and byte bodies only')); return;
     }
-    const signals = [init?.signal, options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined].filter((s): s is AbortSignal => !!s);
-    const signal = signals.length ? AbortSignal.any(signals) : undefined;
+    const deadline = timeoutMs > 0 && Number.isFinite(timeoutMs) ? AbortSignal.timeout(timeoutMs) : undefined;
+    const signals = [init?.signal, deadline].filter((s): s is AbortSignal => !!s);
+    const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     if (signal?.aborted) { reject(signal.reason); return; }
     const request = httpsRequest(url, { method: init?.method ?? 'GET', headers, ca, ...(signal ? { signal } : {}) }, response => {
-      const chunks: Buffer[] = [];
-      response.on('data', (chunk: Buffer) => chunks.push(chunk));
-      response.on('error', reject);
-      response.on('end', () => {
-        const responseHeaders = new Headers();
-        for (const [key, value] of Object.entries(response.headers)) {
-          if (Array.isArray(value)) value.forEach(item => responseHeaders.append(key, item));
-          else if (value !== undefined) responseHeaders.set(key, value);
-        }
-        const status = response.statusCode ?? 502;
-        const nullBody = status === 204 || status === 304 || init?.method === 'HEAD';
-        resolve(new Response(nullBody ? null : Buffer.concat(chunks), { status, statusText: response.statusMessage ?? '', headers: responseHeaders }));
-      });
+      const responseHeaders = new Headers();
+      for (const [key, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) value.forEach(item => responseHeaders.append(key, item));
+        else if (value !== undefined) responseHeaders.set(key, value);
+      }
+      const status = response.statusCode ?? 502;
+      const nullBody = status === 204 || status === 205 || status === 304 || init?.method === 'HEAD';
+      if (nullBody) response.resume();
+      // A web stream over the socket: the caller reads (and so buffers) only what it wants, and
+      // cancelling it (or the signal aborting) destroys the connection.
+      const stream = nullBody ? null : Readable.toWeb(response) as unknown as ReadableStream<Uint8Array>;
+      resolve(new Response(stream, { status, statusText: response.statusMessage ?? '', headers: responseHeaders }));
     });
     request.on('error', error => reject(signal?.aborted ? signal.reason : error));
     if (body !== undefined && body !== null) request.write(body);
@@ -167,6 +180,8 @@ export interface RegistryClientOptions {
   /** Allow plain http to a non-loopback host, for the registry's private Compose network. */
   readonly allowHttp?: boolean;
   readonly timeoutMs?: number;
+  /** The largest registry response read, success or error. 1 MiB. */
+  readonly maxResponseBytes?: number;
   /** TLS trust per product, returned by `endpoint()`. */
   readonly trust?: Readonly<Record<string, ProductTrust>> | ((productId: string) => ProductTrust | undefined);
   /** Extra headers on every request, such as `outboundHeaders()` from `/context`. */
@@ -232,10 +247,14 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
   if (options.token !== undefined && !/^[^\s,]+$/.test(options.token)) throw new TypeError('Registry token must be a single bearer credential');
   const prefix = base.href.replace(/\/+$/, '');
   const timeoutMs = options.timeoutMs ?? 5_000;
+  const maxBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new RangeError('maxResponseBytes must be a non-negative number');
+  // The client's own deadline (below) bounds each request, so the CA fetch sets none of its own.
   const request: typeof fetch = options.fetch
-    ?? (options.ca ? createCaFetch({ ca: options.ca }) : (input, init) => fetch(input, init));
+    ?? (options.ca ? createCaFetch({ ca: options.ca, timeoutMs: 0 }) : (input, init) => fetch(input, init));
 
   async function get(path: string, notFoundIsUndefined = false): Promise<unknown> {
+    const signal = AbortSignal.timeout(timeoutMs);
     const response = await request(`${prefix}${path}`, {
       method: 'GET',
       headers: {
@@ -244,15 +263,32 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
         ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
       },
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
     if (notFoundIsUndefined && response.status === 404) {
       void response.body?.cancel().catch(() => undefined);
       return undefined;
     }
-    if (!response.ok) throw await parseHiveErrorResponse(response);
+    let body: Uint8Array;
     try {
-      return await response.json();
+      body = await readBodyBounded(response, maxBytes, { signal });
+    } catch (error) {
+      // An error status keeps its status without the body. A success body over the limit is the
+      // registry misbehaving; any other failed read is the transport's own error.
+      if (!response.ok) body = new Uint8Array();
+      else if (isBoundedFetchError(error, 'response_too_large')) throw invalid('body');
+      else throw error;
+    }
+    if (!response.ok) {
+      const requestId = response.headers.get('x-request-id') ?? undefined;
+      const retryAfter = response.headers.get('retry-after');
+      throw parseHiveError(response.status, body, {
+        ...(requestId ? { requestId } : {}),
+        ...(retryAfter ? { headers: { 'retry-after': retryAfter } } : {}),
+      });
+    }
+    try {
+      return parseJsonBytes(body);
     } catch {
       throw invalid('body');
     }
