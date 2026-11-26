@@ -307,6 +307,7 @@ const proof = await stepUp.verify(body.idToken, {
   subject: principal.subject,                     // optional: the proof must be the caller's
   sessionId: principal.sessionId,                 // optional: and from the caller's session (sid)
   nonce,                                          // optional: when the server issued the nonce
+  authenticatedAfter,                             // optional: epoch seconds the server started the re-authentication
 });
 // proof: { subject, sessionId, authTime, audience, issuer, issuedAt, expiresAt, recentUntil, claims }
 ```
@@ -315,7 +316,11 @@ The check is RS256 against the issuer's JWKS, an exact issuer, an `aud` that is 
 one of the configured clients (an `azp`, when present, must equal it), `exp`/`iat` with the clock
 tolerance (30 s) and a lifetime of at most 900 s, then the optional nonce, subject and session, and
 finally `auth_time`: present, not in the future and not after `iat`, and at most `maxAgeSeconds`
-old (`check.maxAgeSeconds` can only narrow the window). An Oathweave access token (a token with
+old (`check.maxAgeSeconds` can only narrow the window). With `prompt=login` the sign-in must be
+new: pass `authenticatedAfter`, the time the server started the re-authentication (for example
+when it issued the nonce), and an earlier `auth_time` (beyond the clock tolerance) is
+`REAUTH_STALE` with reason `before_request`. Oathweave may let a different account sign in during
+a forced login, so pass `subject` too. An Oathweave access token (a token with
 `actorType`, `token_type`, `clientId` or `client_id`) is never accepted as an ID token.
 `recentUntil` is `authTime + window`: a product that remembers the step-up must stop honouring it
 then. `verifyRecentAuthentication({ ...options, idToken, nonce?, subject?, sessionId? })` does the
@@ -326,7 +331,7 @@ Refusals are a `RecentAuthenticationError`, a `HiveError` with a stable `code` a
 | `code` | Status | Meaning |
 | --- | --- | --- |
 | `REAUTH_REQUIRED` | 401 | No proof (`missing_token`) or no `auth_time` (`missing_auth_time`): sign in again |
-| `REAUTH_STALE` | 401 | Valid, but the sign-in is older than the window (`stale`, with `maxAgeSeconds`) |
+| `REAUTH_STALE` | 401 | Valid, but the sign-in is older than the window (`stale`, with `maxAgeSeconds`) or than `authenticatedAfter` (`before_request`) |
 | `REAUTH_INVALID` | 401 | Not an acceptable ID token: `malformed_token`, `algorithm_not_allowed`, `unknown_key`, `invalid_signature`, `expired`, `not_yet_valid`, `invalid_issuer`, `invalid_audience`, `invalid_lifetime`, `invalid_claims`, `not_an_id_token`, `nonce_mismatch`, `subject_mismatch`, `session_mismatch`, `invalid_auth_time` |
 | `REAUTH_UNAVAILABLE` | 503 | The JWKS could not be read (`jwks_unavailable`); retry, never an accept |
 

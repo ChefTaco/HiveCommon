@@ -112,6 +112,12 @@ export interface RecentAuthenticationCheck {
   readonly sessionId?: string;
   /** A narrower window for this call. It can only shorten the configured one. */
   readonly maxAgeSeconds?: number;
+  /**
+   * When the product started the re-authentication, epoch seconds (for example when it issued the
+   * nonce). With `prompt=login` the sign-in must be new: an `auth_time` earlier than this, beyond
+   * the clock tolerance, is refused as `REAUTH_STALE` (`before_request`), even inside the window.
+   */
+  readonly authenticatedAfter?: number;
 }
 
 /** A verified, recent sign-in. */
@@ -184,6 +190,9 @@ export function createRecentAuthenticationVerifier(options: RecentAuthentication
   async function verify(idToken: string | null | undefined, check: RecentAuthenticationCheck = {}): Promise<RecentAuthentication> {
     if (idToken === undefined || idToken === null || idToken === '') throw new RecentAuthenticationError('REAUTH_REQUIRED', 'missing_token');
     if (typeof idToken !== 'string' || idToken.length > OATHWEAVE_MAX_TOKEN_LENGTH || idToken.split('.').length !== 3) throw invalid('malformed_token');
+    if (check.authenticatedAfter !== undefined && !(Number.isSafeInteger(check.authenticatedAfter) && check.authenticatedAfter > 0)) {
+      throw new TypeError('check.authenticatedAfter must be a positive integer of epoch seconds');
+    }
     const limit = check.maxAgeSeconds === undefined ? maxAgeSeconds : Math.min(maxAgeSeconds, ageLimit(check.maxAgeSeconds, 'check.maxAgeSeconds'));
     let alg: unknown;
     try {
@@ -235,6 +244,9 @@ export function createRecentAuthenticationVerifier(options: RecentAuthentication
     if (seconds - authTime > limit) {
       throw new RecentAuthenticationError('REAUTH_STALE', 'stale', { details: { maxAgeSeconds: limit } });
     }
+    if (check.authenticatedAfter !== undefined && authTime < check.authenticatedAfter - clockTolerance) {
+      throw new RecentAuthenticationError('REAUTH_STALE', 'before_request');
+    }
     return {
       subject: sub,
       sessionId: sid,
@@ -259,9 +271,10 @@ export function createRecentAuthenticationVerifier(options: RecentAuthentication
 export function verifyRecentAuthentication(
   options: RecentAuthenticationOptions & RecentAuthenticationCheck & { readonly idToken: string | null | undefined },
 ): Promise<RecentAuthentication> {
-  const { idToken, nonce, subject, sessionId, ...settings } = options;
+  const { idToken, nonce, subject, sessionId, authenticatedAfter, ...settings } = options;
   return createRecentAuthenticationVerifier(settings).verify(idToken, {
     ...(nonce !== undefined ? { nonce } : {}),
+    ...(authenticatedAfter !== undefined ? { authenticatedAfter } : {}),
     ...(subject !== undefined ? { subject } : {}),
     ...(sessionId !== undefined ? { sessionId } : {}),
   });

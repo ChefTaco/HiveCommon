@@ -103,6 +103,17 @@ describe('a fresh sign-in', () => {
     await expect(verifier().verify(token, { maxAgeSeconds: 0 })).rejects.toThrow(TypeError);
   });
 
+  it('with prompt=login, refuses a sign-in from before the request started', async () => {
+    const token = await idToken(idClaims({ auth_time: NOW_SEC - 100 }));
+    expect((await verifier().verify(token, { authenticatedAfter: NOW_SEC - 100 })).authTime).toBe(NOW_SEC - 100);
+    // Within the clock tolerance (30 s) of the start, a sign-in still counts.
+    expect((await verifier().verify(token, { authenticatedAfter: NOW_SEC - 70 })).authTime).toBe(NOW_SEC - 100);
+    expect(await refusal(verifier().verify(token, { authenticatedAfter: NOW_SEC - 69 }))).toEqual({ code: 'REAUTH_STALE', reason: 'before_request', status: 401 });
+    expect(await refusal(verifier({ clockToleranceSec: 0 }).verify(token, { authenticatedAfter: NOW_SEC - 99 }))).toMatchObject({ reason: 'before_request' });
+    expect(await refusal(verifyRecentAuthentication({ issuer: ISSUER, audience: CLIENT, keys: keys.jwks, now: () => NOW_MS, idToken: token, authenticatedAfter: NOW_SEC }))).toMatchObject({ reason: 'before_request' });
+    for (const value of [0, -1, 1.5, Number.NaN]) await expect(verifier().verify(token, { authenticatedAfter: value })).rejects.toThrow(TypeError);
+  });
+
   it('tolerates a sign-in slightly in the future within the clock tolerance only', async () => {
     const soon = await idToken(idClaims({ auth_time: NOW_SEC + 20, iat: NOW_SEC + 20, exp: NOW_SEC + 600 }));
     expect((await verifier().verify(soon)).authTime).toBe(NOW_SEC + 20);
