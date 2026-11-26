@@ -1,0 +1,46 @@
+name: Devtools
+
+# Tests the @hivemagnus/hive-devtools package in tooling/ on every supported Node release and
+# runs the reusable workflows against this repository, at this commit, as a caller would.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hive-common-devtools-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  tooling:
+    name: Tooling
+    uses: ./.github/workflows/reusable-node-verify.yml
+    with:
+      working-directory: tooling
+      verify-command: npm run test:ci
+      fetch-depth: 0
+
+  privacy:
+    name: Reusable privacy
+    uses: ./.github/workflows/reusable-privacy.yml
+    with:
+      devtools-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  gitleaks:
+    name: Reusable Gitleaks
+    uses: ./.github/workflows/reusable-gitleaks.yml
+    with:
+      devtools-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      build-command: npm ci && npm run build
+      scan-dirs: dist
+
+  action-pins:
+    name: Reusable Actions pins
+    uses: ./.github/workflows/reusable-action-pins.yml
+    with:
+      devtools-ref: ${{ github.event.pull_request.head.sha || github.sha }}

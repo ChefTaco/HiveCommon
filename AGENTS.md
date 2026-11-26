@@ -56,6 +56,15 @@ notes, or real user data, in code, tests, fixtures, docs, or commit messages:
 | `test/` | Vitest suites, one per module, plus `fixtures/` |
 | `test-vectors/oathweave/` | Published conformance vectors and JWKS (`npm run vectors:generate`) |
 | `scripts/` | Package check, privacy and secret scans, Gitleaks wrapper, publish helpers |
+| `tooling/` | The separate dev-tooling package `@hivemagnus/hive-devtools` (own package.json, tests, README and CHANGELOG) |
+| `.github/workflows/reusable-*.yml` | Reusable workflows (`workflow_call`) for the suite repositories; documented in `tooling/README.md` |
+
+`tooling/` is not part of the runtime kit: never import it from `src/`, never add it to the kit's
+`files` or dependencies (`scripts/test-devtools-boundary.mjs` checks this), and keep it free of
+runtime dependencies. Run `cd tooling && npm test` after changing it or a reusable workflow; a
+change to a command's output, defaults or rules is a behaviour change for every repository that
+adopts it and needs a `tooling/CHANGELOG.md` entry. Reusable workflows pin every action by SHA
+(the tooling tests check this repository's workflows) and run with `contents: read`.
 
 The README documents every export; update its module section when you add or change one.
 
@@ -91,3 +100,5 @@ Use [Conventional Commits](https://www.conventionalcommits.org/). Never overwrit
 versions or release tags. Releases publish from a `vX.Y.Z` tag through
 `.github/workflows/publish.yml`, which waits for approval on the `npm-publish` environment and
 authenticates with npm trusted publishing (OIDC) with provenance; no npm token is stored.
+`@hivemagnus/hive-devtools` publishes the same way from a `hive-devtools-vX.Y.Z` tag through
+`.github/workflows/publish-devtools.yml`.

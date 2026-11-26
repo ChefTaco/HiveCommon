@@ -1,0 +1,64 @@
+name: Publish devtools
+
+# Publishes @hivemagnus/hive-devtools (tooling/) to npm with provenance when its version is not
+# published yet. Push a tag hive-devtools-vX.Y.Z matching tooling/package.json. Publishing
+# waits for approval on the `npm-publish` environment, then authenticates to npm through
+# trusted publishing (OIDC). No npm token is stored in this repository. The first version is
+# published by hand; see tooling/README.md.
+
+on:
+  push:
+    tags: ['hive-devtools-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: npm-publish
+    permissions:
+      contents: read
+      actions: read # read environment protection before any publication
+      id-token: write # trusted publishing and provenance
+    defaults:
+      run:
+        working-directory: tooling
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require protected publication environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node bin/check-publish-environment.mjs
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Check npm supports provenance and trusted publishing
+        run: |
+          npm --version
+          node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error("npm >= 11.5.1 is required"); process.exit(1) }' "$(npm --version)"
+
+      - name: Install
+        run: npm ci
+
+      - name: Gates
+        run: npm run test:ci
+
+      - name: Publish
+        env:
+          DRY_RUN: 'false'
+        run: node bin/publish-package.mjs --name @hivemagnus/hive-devtools --tag-prefix hive-devtools-v

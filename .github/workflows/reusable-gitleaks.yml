@@ -1,0 +1,94 @@
+name: Reusable Gitleaks
+
+# Reusable workflow (workflow_call): scans the complete reachable history of the calling
+# repository with the pinned, checksum-verified Gitleaks and the repository's own config,
+# through hive-gitleaks from this repository at `devtools-ref`. Matches are redacted.
+#
+#   jobs:
+#     gitleaks:
+#       uses: ChefTaco/HiveCommon/.github/workflows/reusable-gitleaks.yml@<sha> # hive-devtools-vX.Y.Z
+#       with:
+#         devtools-ref: <the same sha>
+#
+# See tooling/README.md.
+
+on:
+  workflow_call:
+    inputs:
+      devtools-ref:
+        description: Full commit SHA of ChefTaco/HiveCommon whose tooling/ runs; use the SHA of the uses line
+        type: string
+        required: true
+      config:
+        description: Gitleaks config, relative to the repository root
+        type: string
+        default: .gitleaks.toml
+      scan-dirs:
+        description: Optional newline-separated directories (relative to the root) to scan after the history, such as build output produced by build-command
+        type: string
+        default: ''
+      build-command:
+        description: Optional shell command run before scanning scan-dirs (for example npm ci && npm run build); Node 24.22.3 is set up when it is given
+        type: string
+        default: ''
+      runs-on:
+        description: Runner label
+        type: string
+        default: ubuntu-24.04
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check devtools-ref
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+        run: |
+          [[ "$DEVTOOLS_REF" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::devtools-ref must be a full 40-character commit SHA'; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ChefTaco/HiveCommon
+          ref: ${{ inputs.devtools-ref }}
+          path: devtools
+          sparse-checkout: tooling
+          persist-credentials: false
+      - name: Install checksum-verified Gitleaks
+        run: bash devtools/tooling/bin/install-gitleaks.sh
+      - name: Scan complete reachable history
+        working-directory: source
+        env:
+          CONFIG: ${{ inputs.config }}
+        run: bash ../devtools/tooling/bin/gitleaks.sh --config "$CONFIG" --history
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.build-command != ''
+        with:
+          node-version: 24.22.3
+          package-manager-cache: false
+      - name: Build
+        if: inputs.build-command != ''
+        working-directory: source
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+      - name: Scan build output
+        if: inputs.scan-dirs != ''
+        working-directory: source
+        env:
+          CONFIG: ${{ inputs.config }}
+          SCAN_DIRS: ${{ inputs.scan-dirs }}
+        run: |
+          directories=()
+          while IFS= read -r directory; do [[ -z "$directory" ]] || directories+=("$directory"); done <<< "$SCAN_DIRS"
+          bash ../devtools/tooling/bin/gitleaks.sh --config "$CONFIG" --dir "${directories[@]}"

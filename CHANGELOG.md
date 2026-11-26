@@ -18,6 +18,20 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
   `OATHWEAVE_REVOCATIONS_PATH`, `OATHWEAVE_SESSION_REVOKED`, `OATHWEAVE_USER_SESSIONS_REVOKED`,
   `OATHWEAVE_REVOCATION_POLL_MS`, `OATHWEAVE_REVOCATION_RETRY_POLICY` and
   `OATHWEAVE_REVOCATION_TIMEOUT_MS`.
+- Shared development tooling for the suite repositories, outside the runtime kit. `tooling/` is
+  the separate package `@hivemagnus/hive-devtools` (its own version, tests, README and
+  CHANGELOG; not published yet), with the privacy and secret scans, the pinned Gitleaks wrapper
+  and installer, the Node runtime preflight, an Actions pin check and the npm release helpers
+  that products copied. `.github/workflows/reusable-node-verify.yml`, `reusable-privacy.yml`,
+  `reusable-gitleaks.yml` and `reusable-action-pins.yml` are reusable workflows
+  (`workflow_call`) built on them; the `Devtools` workflow tests the package and runs them on
+  this repository. `publish-devtools.yml` publishes the package from `hive-devtools-vX.Y.Z` tags.
+
+### Upgrade notes
+
+- Nothing changes for consumers of `@hivemagnus/hive-common`: the package contents, exports and
+  dependencies are unchanged (`scripts/test-devtools-boundary.mjs` keeps the tooling out).
+  Products adopt the tooling one at a time; see `tooling/README.md`.
 
 ## [0.7.0] - 2026-11-26
 
