@@ -6,6 +6,19 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- `/oathweave`: `followOathweaveRevocations()` follows Oathweave's session revocation feed
+  (`GET /api/v1/hive/events`, HiveEvent v1 `session.revoked` and `user.sessions_revoked`) and calls
+  the verifier's `invalidateSession()` / `invalidateSubject()`. It polls every 2 s once caught up
+  and backs off after failures. Its options are `loadCursor` / `saveCursor` hooks, `onRevocation`
+  and `onError` callbacks, a service token provider or token function, and `stop()` / `signal`.
+  A 401 invalidates the service token, and a refused cursor restarts from the oldest event.
+  Also added: `parseOathweaveRevocation()` and the constants `OATHWEAVE_PRODUCT_ID`,
+  `OATHWEAVE_REVOCATIONS_PATH`, `OATHWEAVE_SESSION_REVOKED`, `OATHWEAVE_USER_SESSIONS_REVOKED`,
+  `OATHWEAVE_REVOCATION_POLL_MS`, `OATHWEAVE_REVOCATION_RETRY_POLICY` and
+  `OATHWEAVE_REVOCATION_TIMEOUT_MS`.
+
 ## [0.7.0] - 2026-11-26
 
 ### Added

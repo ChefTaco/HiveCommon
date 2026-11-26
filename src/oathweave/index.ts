@@ -65,3 +65,18 @@ export {
   type ServiceTokenProvider,
   type ServiceTokenProviderOptions,
 } from './service-token.js';
+export {
+  followOathweaveRevocations,
+  parseOathweaveRevocation,
+  OATHWEAVE_PRODUCT_ID,
+  OATHWEAVE_REVOCATION_POLL_MS,
+  OATHWEAVE_REVOCATION_RETRY_POLICY,
+  OATHWEAVE_REVOCATION_TIMEOUT_MS,
+  OATHWEAVE_REVOCATIONS_PATH,
+  OATHWEAVE_SESSION_REVOKED,
+  OATHWEAVE_USER_SESSIONS_REVOKED,
+  type FollowOathweaveRevocationsOptions,
+  type OathweaveRevocation,
+  type OathweaveRevocationFollower,
+  type OathweaveRevocationPoll,
+} from './revocations.js';
