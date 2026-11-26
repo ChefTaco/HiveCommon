@@ -113,7 +113,8 @@ refetched, at most every 30 s, when a token names an unknown `kid`); `iss` is on
 - **User:** `actorType: "USER"`, a `sessionId`, a `clientId` other than the subject, string-array
   `permissions` and (optional) `roles`. With `userinfoUrl`, the session is confirmed online; the
   answer is shared for 10 s from when the request started (failures for 2 s), or not at all with
-  `sessionCacheTtlMs: 0`.
+  `sessionCacheTtlMs: 0`. A userinfo answer over 64 KiB (`OATHWEAVE_USERINFO_MAX_BYTES`) is a 503
+  `identity_unavailable`.
 - **Service:** `clientId` (or `client_id`) equals `sub`, `actorType: "SERVICE_ACCOUNT"`,
   `token_type: "access"`, no session.
 
@@ -441,6 +442,15 @@ dropped or rotated connection it reconnects with the last event ID (`Last-Event-
 `cursorParam` query when given), backing off after failed connections. A 4xx other than 408 and
 429 throws `SseStatusError`; `maxFailures` (8) consecutive failures end the follow.
 
+The cursor moves past an event only once `onEvent` returns. A handler (or `isTerminal`) that
+throws ends the follow with `SseHandlerError`: `cause` is its error, `event` the event that failed
+and `cursor` the last one handled, so `followSse(url, { ...options, after: error.cursor })` sees
+the event again. Every exit releases the connection. The parser is linear and bounds the event it
+is building: one over `maxEventBytes` (1 MiB of UTF-8) ends the follow with
+`SseEventTooLargeError`. Set `idleTimeoutMs` (off by default) to a few times the server's heartbeat
+interval to reconnect a connection that has gone silent (`SseIdleTimeoutError` when failures run
+out). A server's `retry: <ms>` sets the wait before reconnecting, capped at the policy's `maxMs`.
+
 ### registry
 
 ```ts
@@ -461,8 +471,12 @@ const endpoint = await registry.endpoint('emberpath'); // { url, internal, trust
 `HiveError` parsed from the registry's envelope, a success body that is not the documented shape is
 a 502 `invalid_registry_response`, and a network failure or timeout rejects with the transport's
 own error. The registry stores no TLS material, so
-`endpoint()` returns the trust you configure. `createCaFetch({ ca })` is a small `node:https`
-fetch that trusts only the given CA.
+`endpoint()` returns the trust you configure. Responses are read with the bounded reader:
+`maxResponseBytes` (1 MiB) caps every body, success or error. `createCaFetch({ ca })` is a small
+`node:https` fetch that trusts only the given CA. Its response resolves on the headers and streams
+the body, so `boundedFetch(url, init, { fetch: caFetch })` or `readBodyBounded()` stop an
+oversized body as it arrives. `timeoutMs` (15 s) covers the request and its body; pass `0` for a
+long-lived stream and cancel it with a `signal`.
 
 ### log
 

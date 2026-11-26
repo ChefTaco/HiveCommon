@@ -6,6 +6,48 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- `/sse`: `followSse()` options `maxEventBytes` (default 1 MiB, `DEFAULT_MAX_SSE_EVENT_BYTES`)
+  and `idleTimeoutMs` (off by default), and the errors `SseHandlerError`,
+  `SseEventTooLargeError` and `SseIdleTimeoutError`. The server's `retry:` field is honoured.
+- `/registry`: `createRegistryClient()` option `maxResponseBytes` (default 1 MiB) and the
+  `DEFAULT_CA_FETCH_TIMEOUT_MS` constant.
+- `/oathweave`: `OATHWEAVE_USERINFO_MAX_BYTES` (64 KiB), the largest userinfo response read.
+
+### Fixed
+
+- `/sse`: an `onEvent` handler that throws no longer loses the event. The handler error used to
+  be swallowed, the cursor had already moved past the event, and the follower reconnected
+  without cancelling the old body. Now the cursor moves only after the handler returns, the
+  follow stops with an `SseHandlerError` (`cause` is the handler's error, `cursor` the last event
+  handled, `event` the one that failed), and the connection is released on every exit.
+- `/sse`: the follower parses line by line in linear time and bounds the event it is building.
+  It used to append to one growing buffer and rescan all of it for a blank line on every chunk,
+  so a server that never sent one used unbounded memory and quadratic time. Lines ending in CR,
+  LF or CRLF are handled even when split across chunks, including a blank line written as
+  `\n\r\n`, which used to go unrecognised.
+- `/registry`: `createCaFetch()` streams the response body instead of buffering all of it
+  before resolving, so `/fetch` `readBodyBounded()` and `boundedFetch({ fetch })` enforce their
+  limit as the body arrives. It has a default deadline of 15 s for the request and its body.
+- `/registry` and `/oathweave`: the registry client and the verifier's userinfo check read
+  their responses with the bounded reader (1 MiB and 64 KiB) within the request deadline,
+  instead of an unbounded `response.json()` or `response.text()`.
+
+### Upgrade notes
+
+- `followSse()`: a throwing `onEvent` (or `isTerminal`) now ends the follow with an
+  `SseHandlerError` instead of being retried silently. Catch it, and resume from `error.cursor`
+  if you want to try the event again. An event over 1 MiB now ends the follow with an
+  `SseEventTooLargeError`; raise `maxEventBytes` for streams that send larger ones. After a
+  server sends `retry: <ms>`, the follower waits that long (capped at the policy's `maxMs`)
+  before reconnecting, as `EventSource` does, instead of reconnecting at once.
+- `createCaFetch()`: requests now time out after 15 s, body included. Pass `timeoutMs: 0` for a
+  long-lived stream and cancel it with a `signal`. A response body can be read once and holds
+  the connection open until it is read or cancelled.
+- The registry client refuses a success body over 1 MiB as `invalid_registry_response`; raise
+  `maxResponseBytes` if your registry answers with more.
+
 ## [0.6.1] - 2026-11-24
 
 ### Changed

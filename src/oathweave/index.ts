@@ -14,6 +14,7 @@ export {
   OATHWEAVE_SESSION_CACHE_MAX,
   OATHWEAVE_SESSION_CACHE_TTL_MS,
   OATHWEAVE_STREAM_RECHECK_MS,
+  OATHWEAVE_USERINFO_MAX_BYTES,
   type OathweaveVerifier,
   type OathweaveVerifierOptions,
   type VerifyOptions,
