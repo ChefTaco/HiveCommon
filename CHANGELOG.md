@@ -6,6 +6,13 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- `/oathweave`: the recent-authentication check takes `authenticatedAfter` (epoch seconds): when
+  the product started a `prompt=login` re-authentication. An `auth_time` earlier than that,
+  beyond the clock tolerance, is refused as `REAUTH_STALE` with reason `before_request`, even
+  inside the window.
+
 ## [0.9.0] - 2026-11-26
 
 ### Added
