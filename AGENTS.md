@@ -78,7 +78,10 @@ sending a change, run:
 npm run verify   # privacy tests, secret and private-data scans, typecheck, lint, test, build, pack
 ```
 
-Single steps: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:coverage` (CI runs it
+A change to an export's types or behaviour can break a product: the `Downstream` workflow
+(`scripts/check-downstream.mjs`) typechecks every product that depends on this package against
+the packed change. When it fails, fix the change, or say in the pull request why the product must
+change instead. Single steps: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:coverage` (CI runs it
 too), `npm run build`, `npm run pack:check`. The git hooks also run the pinned Gitleaks
 binary (`bash scripts/install-gitleaks.sh`, see CONTRIBUTING.md).
 
