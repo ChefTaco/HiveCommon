@@ -86,6 +86,10 @@
       "types": "./dist/sse/index.d.ts",
       "default": "./dist/sse/index.js"
     },
+    "./rate-limit": {
+      "types": "./dist/rate-limit/index.d.ts",
+      "default": "./dist/rate-limit/index.js"
+    },
     "./secrets": {
       "types": "./dist/secrets/index.d.ts",
       "default": "./dist/secrets/index.js"

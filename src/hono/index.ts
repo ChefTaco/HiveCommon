@@ -27,6 +27,10 @@ import { hasAnyRole, hasScopes, requirePermissions, type PermissionOptions } fro
 import type { OathweaveVerifier } from '../oathweave/verifier.js';
 import { readStreamBounded } from '../fetch/index.js';
 import {
+  limitRequest, rateLimitHeaders, resolveClientAddress, resolveTrustedProxies,
+  type ClientAddress, type RateLimitMiddlewareOptions, type RateLimitResult, type TrustedProxies,
+} from '../rate-limit/index.js';
+import {
   bodyError, checkContentTypeFirst, declaredLength, maxBodyBytes, parseJsonBody,
   type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions,
 } from '../internal/body.js';
@@ -37,6 +41,8 @@ export { DEFAULT_MAX_BODY_BYTES, type BodyProblem, type JsonBody, type ReadBodyL
 export interface HiveVariables {
   hiveContext: RequestContext;
   hivePrincipal: OathweavePrincipal;
+  /** Set by `rateLimit()` (and `clientAddress()`). */
+  hiveClientAddress: ClientAddress;
 }
 export interface HiveEnv extends Env {
   Variables: HiveVariables;
@@ -269,4 +275,70 @@ export function securityHeaders(options: SecurityHeadersOptions = {}): Middlewar
       await next();
     }
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// Client address and rate limiting
+
+/** The socket address under `@hono/node-server` (`c.env.incoming`), or undefined elsewhere. */
+function nodePeerAddress(c: Context): string | undefined {
+  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: unknown } } } | undefined)?.incoming;
+  const address = incoming?.socket?.remoteAddress;
+  return typeof address === 'string' ? address : undefined;
+}
+
+/**
+ * The client address of the request, believing `X-Forwarded-For` only from `trusted` proxies
+ * (see `/rate-limit` `resolveClientAddress()`). The socket address is read from
+ * `@hono/node-server`; on another runtime pass `peerAddress`. Also set as `hiveClientAddress`.
+ */
+export function clientAddress(c: Context, trusted: TrustedProxies, peerAddress: (c: Context) => string | undefined = nodePeerAddress): ClientAddress {
+  const client = resolveClientAddress({ peer: peerAddress(c), forwardedFor: c.req.header('x-forwarded-for'), trusted });
+  c.set('hiveClientAddress' as never, client as never);
+  return client;
+}
+
+/** The client address set by `rateLimit()` or `clientAddress()`, or undefined. */
+export function getClientAddress(c: Context): ClientAddress | undefined {
+  return (c as Context<HiveEnv>).get('hiveClientAddress') as ClientAddress | undefined;
+}
+
+export interface HonoRateLimitOptions extends RateLimitMiddlewareOptions {
+  /**
+   * The key after `prefix`. By default the client address (`addressKey()`). Return undefined to
+   * let a request through unlimited (for example an authenticated service).
+   */
+  readonly key?: (c: Context, client: ClientAddress) => string | undefined | Promise<string | undefined>;
+  /** Tokens a request spends. 1. */
+  readonly cost?: number | ((c: Context) => number);
+  /** The socket address. Defaults to `@hono/node-server`'s `c.env.incoming.socket.remoteAddress`. */
+  readonly peerAddress?: (c: Context) => string | undefined;
+}
+
+/**
+ * Rate-limit requests per client (or per `key`). A refused request throws a 429 `HiveError`
+ * (`rate_limited`, `Retry-After`, `details.retryAfterSeconds`) for `errorHandler()` to answer;
+ * the handler never runs. Sets `hiveClientAddress`.
+ *
+ *   app.use('/api/v1/auth/*', rateLimit({ limiter: createRateLimiter({ limit: 10, windowMs: 60_000 }), trustedProxies: env.TRUSTED_PROXIES }));
+ */
+export function rateLimit(options: HonoRateLimitOptions): MiddlewareHandler {
+  const trusted = resolveTrustedProxies(options.trustedProxies);
+  const peerAddress = options.peerAddress ?? nodePeerAddress;
+  return async (c, next) => {
+    const cost = typeof options.cost === 'function' ? options.cost(c) : options.cost;
+    const { client, result } = await limitRequest(
+      options, trusted,
+      { peer: peerAddress(c), forwardedFor: c.req.header('x-forwarded-for') },
+      options.key ? keyClient => (options.key as NonNullable<HonoRateLimitOptions['key']>)(c, keyClient) : undefined,
+      cost,
+    );
+    c.set('hiveClientAddress' as never, client as never);
+    if (result && options.headers) setRateLimitHeaders(c, result);
+    await next();
+  };
+}
+
+function setRateLimitHeaders(c: Context, result: RateLimitResult): void {
+  for (const [name, value] of Object.entries(rateLimitHeaders(result))) c.header(name, value);
 }

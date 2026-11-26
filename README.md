@@ -29,6 +29,7 @@ npm install @hivemagnus/hive-common
 | [`/artifact`](#artifact) | Artifact transfer v2 vocabulary, rendition selection, `Repr-Digest`, byte ranges | Node, browser |
 | [`/sse`](#sse) | Follow a server-sent event stream with cursor reconnect | Node, browser |
 | [`/fetch`](#fetch) | Outbound fetch with a deadline and a response-size limit | Node, browser |
+| [`/rate-limit`](#rate-limit) | Client address behind trusted proxies, keyed token-bucket limiter, 429 envelope | Node |
 | [`/secrets`](#secrets) | Constant-time comparison, digest-checked static tokens, bearer header parsing | Node |
 | [`/contracts`](#contracts) | Isomorphic types and validators, request IDs, `Retry-After` | Node, browser |
 | [`/hono`](#hono) | Hono middleware | Node |
@@ -586,6 +587,51 @@ the bounded read for a response obtained elsewhere.
 Failures are a `BoundedFetchError` with a `reason`: `timeout`, `network`, `response_too_large`,
 `empty_response`, `invalid_json`. Its message never holds the URL, which may be a secret; the
 original error is on `cause`. The caller's own abort is rethrown unchanged.
+
+### rate-limit
+
+```ts
+import { createRateLimiter, trustedProxies } from '@hivemagnus/hive-common/rate-limit';
+import { rateLimit } from '@hivemagnus/hive-common/hono'; // or /node-http
+
+const proxies = trustedProxies(process.env.TRUSTED_PROXIES); // '10.0.0.0/8, loopback'
+app.use('/api/v1/auth/*', rateLimit({ limiter: createRateLimiter({ limit: 10, windowMs: 60_000 }), trustedProxies: proxies, prefix: 'login:' }));
+app.use('/api/*', rateLimit({ limiter: createRateLimiter({ limit: 240, windowMs: 60_000 }), trustedProxies: proxies }));
+```
+
+**Client address.** `resolveClientAddress({ peer, forwardedFor, trusted })` believes
+`X-Forwarded-For` only when the socket peer is a trusted proxy, and reads it from the right: each
+trusted hop vouches for the one to its left, and the first address that is not a trusted proxy is
+the client. Entries further left were written by the client and are never read, so a forged prefix
+changes nothing. A trusted proxy that sent no header, or a hop that is not an address (or more
+than `maxHops`, 32), attributes the request to the last trusted hop; an unknown socket address
+gives `unknown`. The result's `decision` (`direct`, `forwarded`, `proxy_without_forwarding`,
+`invalid_forwarding`, `unknown_peer`) is for metrics. `trustedProxies()` takes addresses, CIDR
+ranges and the presets `loopback`, `private` (RFC 1918 and `fc00::/7`, a Compose network) and
+`linklocal`, as a list or one comma- or space-separated string; empty trusts none, and a bad entry
+throws at startup. `normalizeIpAddress()` reads socket and header forms (`::ffff:192.0.2.1`,
+`[2001:db8::1]:443`, `192.0.2.1:5000`, zone indexes) and `addressKey()` groups IPv6 clients by
+their /64 (`ipv6PrefixLength`), since one host usually holds a whole prefix.
+
+**Limiter.** `createRateLimiter({ limit, windowMs, burst?, maxKeys? })` is a keyed token bucket:
+up to `burst` (default `limit`) tokens per key, refilled continuously at `limit` per `windowMs`.
+`consume(key, cost?)` returns `{ allowed, limit, remaining, retryAfterMs, resetMs }`; a refusal
+spends nothing. `peek()`, `reset()` (after a successful sign-in, say) and `clear()` manage keys.
+State is per process and holds at most `maxKeys` (10 000) keys, dropping the least recently used;
+several instances that must share a budget pass their own `RateLimitStore` (any object with
+`consume()`, which may be async, such as a Redis script).
+
+**Middleware.** `/hono` `rateLimit(options)` and `/node-http` `rateLimit(options)` resolve the
+client (Hono reads the socket from `@hono/node-server`; set `peerAddress` elsewhere), build the key
+(`prefix` plus `addressKey(client)`, or your `key(c | req, client)`, which may return undefined to
+let a request through), spend `cost`, and throw a 429 `HiveError` when refused: code
+`rate_limited`, `Retry-After` in whole seconds and `details.retryAfterSeconds` in the envelope,
+answered by `errorHandler()` or `hiveHandler()`. `headers: true` adds `RateLimit-Limit`,
+`RateLimit-Remaining` and `RateLimit-Reset`. `onLimited` sees each refusal. Hono also sets
+`hiveClientAddress` (`getClientAddress(c)`); `clientAddress(c, trusted)` and
+`clientAddressOf(req, trusted)` resolve it without limiting. For budgets that are not per request
+(per account, per action) call `enforceRateLimit(limiter, key)` or build the error with
+`rateLimitError(result)`.
 
 ### secrets
 

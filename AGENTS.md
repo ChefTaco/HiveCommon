@@ -49,7 +49,7 @@ notes, or real user data, in code, tests, fixtures, docs, or commit messages:
 
 | Path | What it holds |
 | --- | --- |
-| `src/<subpath>/index.ts` | One directory per export: `oathweave`, `errors`, `health`, `context`, `registry`, `log`, `events`, `contracts`, `fetch`, `feed`, `execution`, `retry`, `artifact`, `sse`, `secrets`, `hono`, `node-http` |
+| `src/<subpath>/index.ts` | One directory per export: `oathweave`, `errors`, `health`, `context`, `registry`, `log`, `events`, `contracts`, `fetch`, `feed`, `execution`, `retry`, `artifact`, `sse`, `rate-limit`, `secrets`, `hono`, `node-http` |
 | `src/oathweave/conformance.ts` | The `./oathweave/conformance` export (vector runner) |
 | `src/internal/` | Shared code that is not exported (bounded body reader) |
 | `test/` | Vitest suites, one per module, plus `fixtures/` |
