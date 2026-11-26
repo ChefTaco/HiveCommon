@@ -239,6 +239,53 @@ Failures are a `ServiceTokenError`: a `HiveError` with status 503, code `auth_un
 `audience_mismatch`). Its message never holds the client secret, a token or the token endpoint's
 response.
 
+#### Following Oathweave revocations
+
+The verifier caches each session check for `sessionCacheTtlMs` (10 s by default). Oathweave serves
+every ended session as a HiveEvent v1 feed at `GET /api/v1/hive/events`. Following that feed drops
+the cached answer as soon as the session ends, through `invalidateSession(sid)` and
+`invalidateSubject(sub)`:
+
+```ts
+import { createOathweaveVerifier, createServiceTokenProvider, followOathweaveRevocations } from '@hivemagnus/hive-common/oathweave';
+
+const verifier = createOathweaveVerifier({ /* ..., */ userinfoUrl: process.env.OATHWEAVE_USERINFO_URL! });
+const tokens = createServiceTokenProvider({ /* a machine client whose policy grants iam:tokens:introspect */ });
+
+const revocations = followOathweaveRevocations({
+  verifier,
+  feedUrl: 'https://oathweave.example.test/api/v1/hive/events', // https only
+  tokenProvider: tokens,                                         // or () => token
+  loadCursor: () => store.get('oathweave-revocations'),          // optional persistence
+  saveCursor: cursor => store.set('oathweave-revocations', cursor),
+  onError: error => log.warn('revocation feed', { error: String(error) }),
+});
+// On shutdown:
+revocations.stop();
+await revocations.done;
+```
+
+| Event | `sourceRef` | Call |
+| --- | --- | --- |
+| `session.revoked` | `session:<sid>` (the tokens' `sid` / `sessionId` claim) | `invalidateSession(sid)` |
+| `user.sessions_revoked` | `user:<sub>` | `invalidateSubject(sub)` |
+
+Events from another product or of another type are ignored. Once it has caught up, the follower
+polls every 2 s (`intervalMs`). After a failed poll it backs off from 1 s up to 60 s (`policy`)
+and reports the error to `onError`. A 401 also calls the token provider's `invalidate()`. A 400
+for a saved cursor, for example after Oathweave was restored from a backup, starts again from the
+oldest retained event and saves `null`. A feed's last page has no `nextCursor`. The follower
+therefore keeps the cursor from before that page and skips the event IDs it already applied.
+After a restart it applies that page once more, which is harmless: dropping a cache entry twice
+changes nothing.
+
+`poll()` runs a poll now; concurrent calls share it. The follower stops only through `stop()` or
+`signal`, and `done` never rejects. `onRevocation(revocation, dropped, event)` reports each
+applied revocation. `parseOathweaveRevocation(event)` reads one event on its own.
+
+The feed only shortens how long a revoked session's cached answer lives. A missed or failed poll
+never accepts anything, because the answer still expires after `sessionCacheTtlMs`.
+
 ### Conformance vectors
 
 `test-vectors/oathweave/vectors.json` ships a test JWKS and fifteen pre-signed tokens (valid user,
