@@ -15,7 +15,7 @@ npm install @hivemagnus/hive-common
 
 | Subpath | What it is | Runs in |
 | --- | --- | --- |
-| [`/oathweave`](#oathweave) | Oathweave access-token verifier, identity links, permissions, stream re-check, service-token provider | Node |
+| [`/oathweave`](#oathweave) | Oathweave access-token verifier, identity links, permissions, stream re-check, service-token provider, recent-authentication (step-up) check | Node |
 | [`/oathweave/conformance`](#conformance-vectors) | Runs the shipped test vectors against any verifier | Node |
 | [`/errors`](#errors) | `HiveError`, the envelope, `toErrorResponse()`, `parseHiveError()` | Node, browser |
 | [`/health`](#health) | `/health/live` and `/health/ready` with dependency checks | Node |
@@ -285,6 +285,50 @@ applied revocation. `parseOathweaveRevocation(event)` reads one event on its own
 
 The feed only shortens how long a revoked session's cached answer lives. A missed or failed poll
 never accepts anything, because the answer still expires after `sessionCacheTtlMs`.
+
+#### Recent authentication (step-up)
+
+Before a sensitive action (an upgrade, a credential or policy change, a terminal) a product may
+need proof that the person signed in a moment ago. The browser gets that proof from Oathweave
+with a fresh authorization request (`prompt=login` and/or `max_age`, PKCE and a nonce) and sends
+the ID token it receives to the product's server, which checks it:
+
+```ts
+import { createRecentAuthenticationVerifier, isRecentAuthenticationError } from '@hivemagnus/hive-common/oathweave';
+
+const stepUp = createRecentAuthenticationVerifier({
+  issuer: process.env.OATHWEAVE_ISSUER!,          // the https browser issuer
+  jwksUrl: process.env.OATHWEAVE_JWKS_URL!,       // https only
+  audience: ['hivexui-emberpath'],                // the browser clients trusted for step-up; no default
+  maxAgeSeconds: 300,                             // auth_time window, 1-3600 (default 300)
+});
+
+const proof = await stepUp.verify(body.idToken, {
+  subject: principal.subject,                     // optional: the proof must be the caller's
+  sessionId: principal.sessionId,                 // optional: and from the caller's session (sid)
+  nonce,                                          // optional: when the server issued the nonce
+});
+// proof: { subject, sessionId, authTime, audience, issuer, issuedAt, expiresAt, recentUntil, claims }
+```
+
+The check is RS256 against the issuer's JWKS, an exact issuer, an `aud` that is one string and
+one of the configured clients (an `azp`, when present, must equal it), `exp`/`iat` with the clock
+tolerance (30 s) and a lifetime of at most 900 s, then the optional nonce, subject and session, and
+finally `auth_time`: present, not in the future and not after `iat`, and at most `maxAgeSeconds`
+old (`check.maxAgeSeconds` can only narrow the window). An Oathweave access token (a token with
+`actorType`, `token_type`, `clientId` or `client_id`) is never accepted as an ID token.
+`recentUntil` is `authTime + window`: a product that remembers the step-up must stop honouring it
+then. `verifyRecentAuthentication({ ...options, idToken, nonce?, subject?, sessionId? })` does the
+same in one call (it builds a verifier, so reuse one for a `jwksUrl`).
+
+Refusals are a `RecentAuthenticationError`, a `HiveError` with a stable `code` and a `reason`:
+
+| `code` | Status | Meaning |
+| --- | --- | --- |
+| `REAUTH_REQUIRED` | 401 | No proof (`missing_token`) or no `auth_time` (`missing_auth_time`): sign in again |
+| `REAUTH_STALE` | 401 | Valid, but the sign-in is older than the window (`stale`, with `maxAgeSeconds`) |
+| `REAUTH_INVALID` | 401 | Not an acceptable ID token: `malformed_token`, `algorithm_not_allowed`, `unknown_key`, `invalid_signature`, `expired`, `not_yet_valid`, `invalid_issuer`, `invalid_audience`, `invalid_lifetime`, `invalid_claims`, `not_an_id_token`, `nonce_mismatch`, `subject_mismatch`, `session_mismatch`, `invalid_auth_time` |
+| `REAUTH_UNAVAILABLE` | 503 | The JWKS could not be read (`jwks_unavailable`); retry, never an accept |
 
 ### Conformance vectors
 
