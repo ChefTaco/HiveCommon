@@ -128,8 +128,16 @@ export interface OathweaveVerifier {
   verifyService(token: string): Promise<OathweaveServicePrincipal>;
   /** Verify an `Authorization` header value. A missing header is `missing_token`. */
   verifyAuthorization(header: string | null | undefined, options?: VerifyOptions): Promise<OathweavePrincipal>;
-  /** Forget cached session answers, for example after a sign-out event. */
+  /** Forget every cached session answer. */
   clearSessionCache(): void;
+  /**
+   * Forget the cached session answers for one Oathweave session (the token's `sessionId`), for
+   * example when the product learns that it was signed out or revoked. The next request with a
+   * token of that session asks userinfo again. Returns how many answers were dropped.
+   */
+  invalidateSession(sessionId: string): number;
+  /** Forget the cached session answers for every session of one user (`sub`). Returns how many were dropped. */
+  invalidateSubject(subject: string): number;
 }
 
 const BEARER = /^Bearer[ ]+([A-Za-z0-9\-._~+/]+=*)[ ]*$/i;
@@ -194,6 +202,8 @@ function mapVerifyError(error: unknown): OathweaveError {
 interface SessionCheck {
   expiresAt: number;
   displayName: Promise<string>;
+  readonly sessionId: string;
+  readonly subject: string;
 }
 
 const ACCEPT_VALUES: readonly AcceptPrincipal[] = ['user', 'service', 'any'];
@@ -273,7 +283,7 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
     return typeof name === 'string' && name ? name : subject;
   }
 
-  function sessionCheck(token: string, subject: string): Promise<string> {
+  function sessionCheck(token: string, subject: string, sessionId: string): Promise<string> {
     const key = createHash('sha256').update(token).digest('hex');
     const startedAt = now();
     const current = sessions.get(key);
@@ -284,7 +294,7 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
       if (sessions.size >= sessionMax) sessions.delete(sessions.keys().next().value as string);
     }
     // Concurrent callers share one in-flight request; the TTL runs from when it started.
-    const check: SessionCheck = { expiresAt: startedAt + sessionTtl, displayName: fetchDisplayName(token, subject) };
+    const check: SessionCheck = { expiresAt: startedAt + sessionTtl, displayName: fetchDisplayName(token, subject), sessionId, subject };
     check.displayName.catch(() => {
       check.expiresAt = Math.min(check.expiresAt, now() + OATHWEAVE_FAILED_CHECK_TTL_MS);
     });
@@ -333,7 +343,7 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
       throw new OathweaveError('invalid_issuer');
     }
     if (principal.kind === 'user' && userinfoUrl) {
-      const displayName = await sessionCheck(token, principal.subject);
+      const displayName = await sessionCheck(token, principal.subject, principal.sessionId);
       return { ...principal, displayName, sessionChecked: true };
     }
     return principal;
@@ -352,5 +362,15 @@ export function createOathweaveVerifier(options: OathweaveVerifierOptions): Oath
       return verify(token, verifyOptions);
     },
     clearSessionCache: () => sessions.clear(),
+    invalidateSession: sessionId => dropSessions(entry => entry.sessionId === sessionId),
+    invalidateSubject: subject => dropSessions(entry => entry.subject === subject),
   };
+
+  function dropSessions(matches: (entry: SessionCheck) => boolean): number {
+    let dropped = 0;
+    for (const [key, entry] of sessions) {
+      if (matches(entry)) { sessions.delete(key); dropped++; }
+    }
+    return dropped;
+  }
 }

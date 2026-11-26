@@ -564,6 +564,26 @@ describe('online session check', () => {
     expect(stub.calls).toHaveLength(3);
   });
 
+  it('forgets one session, or every session of one user, on request', async () => {
+    const stub = userinfo();
+    const v = verifier({ userinfoUrl: USERINFO_URL, fetch: stub.fetch });
+    const first = await mint(keys, userClaims({ sessionId: 'session-1' }));
+    const firstAgain = await mint(keys, userClaims({ sessionId: 'session-1', jti: 'other-jti' }));
+    const second = await mint(keys, userClaims({ sessionId: 'session-2' }));
+    await Promise.all([v.verify(first), v.verify(firstAgain), v.verify(second)]);
+    expect(stub.calls).toHaveLength(3);
+    expect(v.invalidateSession('session-1')).toBe(2);
+    expect(v.invalidateSession('session-1')).toBe(0);
+    await v.verify(second);
+    expect(stub.calls).toHaveLength(3);
+    await v.verify(first);
+    expect(stub.calls).toHaveLength(4);
+    expect(v.invalidateSubject('someone-else')).toBe(0);
+    expect(v.invalidateSubject('user-subject')).toBe(2);
+    await v.verify(second);
+    expect(stub.calls).toHaveLength(5);
+  });
+
   it('remembers a failed check only briefly', async () => {
     let now = NOW_MS;
     let status = 401;

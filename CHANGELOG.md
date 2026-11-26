@@ -29,6 +29,22 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 - `/registry`: `createRegistryClient()` option `maxResponseBytes` (default 1 MiB) and the
   `DEFAULT_CA_FETCH_TIMEOUT_MS` constant.
 - `/oathweave`: `OATHWEAVE_USERINFO_MAX_BYTES` (64 KiB), the largest userinfo response read.
+- `/oathweave`: `createServiceTokenProvider({ clientAuth: 'client_secret_basic' })` sends the
+  client credentials in an HTTP Basic `Authorization` header (RFC 6749 section 2.3.1) instead of
+  the form body. `client_secret_post` stays the default.
+- `/oathweave`: `verifier.invalidateSession(sessionId)` and `verifier.invalidateSubject(sub)`
+  drop the cached userinfo answers of one session or one user, for a product that learns of a
+  sign-out, instead of `clearSessionCache()` dropping all of them. Code that implements the
+  `OathweaveVerifier` interface itself (rather than calling `createOathweaveVerifier()`) must add
+  both methods.
+- `/health`: `readyCacheMs: false` runs every check on every readiness request.
+
+### Changed
+
+- `/health`: `createHealth()` (and so `registerHealthRoutes()` and `hiveHandler({ health })`)
+  shares a readiness run between requests that arrive while it is in progress by default
+  (`readyCacheMs: 0`). Before, every request ran every dependency check, so concurrent probes of
+  an unauthenticated `/health/ready` multiplied the load on the dependencies.
 
 ### Fixed
 
@@ -62,6 +78,9 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
   the connection open until it is read or cancelled.
 - The registry client refuses a success body over 1 MiB as `invalid_registry_response`; raise
   `maxResponseBytes` if your registry answers with more.
+- Readiness: concurrent requests now get the same result object from one run. Set
+  `readyCacheMs: false` for the old behaviour, or a positive number (1000-2000 ms) to also serve
+  a finished result to an internet-facing endpoint.
 
 ## [0.6.1] - 2026-11-24
 
