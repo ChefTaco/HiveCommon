@@ -1,0 +1,11 @@
+HiveDevtools (@hivemagnus/hive-devtools)
+Copyright 2026 ChefTaco and contributors
+
+This product includes software developed by ChefTaco and contributors
+(https://github.com/ChefTaco/HiveCommon).
+
+The privacy, secret-scanning, Gitleaks, Node runtime and release scripts consolidate the copies
+kept in the Hive:Magnus product repositories, licensed under the Apache License 2.0.
+
+It runs Gitleaks (https://github.com/gitleaks/gitleaks), licensed under the MIT License, which
+hive-install-gitleaks downloads and verifies by checksum; Gitleaks is not bundled.

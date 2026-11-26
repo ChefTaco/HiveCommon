@@ -930,6 +930,15 @@ weekly. Locally: `npm pack`, clone a product, then
 `node scripts/check-downstream.mjs <hivemem|hiveskills|emberpath|ardentstudio|hivexui|magnus> <checkout> <tarball>`.
 The consumer table in that script lists each product's directories and commands.
 
+## Shared development tooling
+
+This repository also holds the suite's development tooling, kept out of the runtime kit:
+`tooling/` is the separate package `@hivemagnus/hive-devtools` (privacy and secret scans, the
+pinned Gitleaks wrapper, Node runtime and Actions pin checks, npm release helpers), and
+`.github/workflows/reusable-*.yml` are reusable workflows (`workflow_call`) for Node verification,
+privacy scans, Gitleaks and Actions pins. `@hivemagnus/hive-common` neither depends on nor ships
+it. See [tooling/README.md](tooling/README.md) for the commands, workflow inputs and adoption.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Security reports:
 [SECURITY.md](SECURITY.md).
 

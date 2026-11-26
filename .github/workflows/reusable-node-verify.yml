@@ -1,0 +1,96 @@
+name: Reusable Node verify
+
+# Reusable workflow (workflow_call) for the Hive:Magnus repositories: install, audit and verify a
+# Node package on every supported Node release. Callers pin it by commit SHA:
+#
+#   jobs:
+#     verify:
+#       uses: ChefTaco/HiveCommon/.github/workflows/reusable-node-verify.yml@<sha> # hive-devtools-vX.Y.Z
+#       with:
+#         verify-command: npm run verify
+#
+# See tooling/README.md for every input and the adoption steps.
+
+on:
+  workflow_call:
+    inputs:
+      node-versions:
+        description: JSON array of exact Node.js versions to test on (one job each)
+        type: string
+        default: '["24.22.3", "26.13.1"]'
+      working-directory:
+        description: Directory, relative to the repository root, that holds package.json and package-lock.json
+        type: string
+        default: '.'
+      install-command:
+        description: Shell command that installs dependencies
+        type: string
+        default: npm ci
+      verify-command:
+        description: Shell command that runs the gates (tests, lint, build ...)
+        type: string
+        default: npm test
+      audit:
+        description: Run npm audit on production dependencies after install
+        type: boolean
+        default: true
+      audit-level:
+        description: Lowest npm audit severity that fails the job
+        type: string
+        default: high
+      fetch-depth:
+        description: Commits of history to fetch (0 for all, for gates that read history)
+        type: number
+        default: 1
+      runs-on:
+        description: Runner label
+        type: string
+        default: ubuntu-24.04
+      timeout-minutes:
+        description: Timeout of each matrix job
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (Node ${{ matrix.node-version }})
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(inputs.node-versions) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch-depth }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - name: Install
+        env:
+          COMMAND: ${{ inputs.install-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+      - name: Audit production dependencies
+        if: inputs.audit
+        env:
+          AUDIT_LEVEL: ${{ inputs.audit-level }}
+        run: |
+          case "$AUDIT_LEVEL" in low|moderate|high|critical) ;; *) echo "::error::audit-level must be low, moderate, high or critical"; exit 1 ;; esac
+          npm audit --omit=dev --audit-level="$AUDIT_LEVEL"
+      - name: Verify
+        env:
+          COMMAND: ${{ inputs.verify-command }}
+        run: bash -euo pipefail -c "$COMMAND"

@@ -1,0 +1,133 @@
+name: Reusable privacy scan
+
+# Reusable workflow (workflow_call): forbidden-path, private-terms and secret scans of the
+# calling repository with the hive-devtools scanners from this repository at `devtools-ref`.
+#
+#   jobs:
+#     privacy:
+#       uses: ChefTaco/HiveCommon/.github/workflows/reusable-privacy.yml@<sha> # hive-devtools-vX.Y.Z
+#       with:
+#         devtools-ref: <the same sha>
+#       secrets:
+#         private-terms: ${{ secrets.PRIVATE_TERMS }} # optional
+#
+# Findings name the file, line and rule only; matching values are never printed. See tooling/README.md.
+
+on:
+  workflow_call:
+    inputs:
+      devtools-ref:
+        description: Full commit SHA of ChefTaco/HiveCommon whose tooling/ runs; use the SHA of the uses line
+        type: string
+        required: true
+      forbid-dirs:
+        description: Space-separated extra directory names whose contents may never be committed (hive-check-private-data --forbid-dir)
+        type: string
+        default: ''
+      allow-paths:
+        description: Newline-separated extended regexes of paths exempt from the forbidden-path rule (--allow)
+        type: string
+        default: ''
+      secret-names:
+        description: Space-separated extra variable names whose literal values are credentials (hive-scan-secrets --secret-name)
+        type: string
+        default: ''
+      exclude-paths:
+        description: Newline-separated globs of repository-relative paths the secret scan skips (--exclude)
+        type: string
+        default: ''
+      check-commit-messages:
+        description: With private terms, also check the commit messages of the pushed or pull-request range
+        type: boolean
+        default: true
+      runs-on:
+        description: Runner label
+        type: string
+        default: ubuntu-24.04
+    secrets:
+      private-terms:
+        description: Optional newline-separated private-terms denylist (extended regexes); never printed
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    name: Secrets and private data
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check devtools-ref
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+        run: |
+          [[ "$DEVTOOLS_REF" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::devtools-ref must be a full 40-character commit SHA'; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ChefTaco/HiveCommon
+          ref: ${{ inputs.devtools-ref }}
+          path: devtools
+          sparse-checkout: tooling
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          package-manager-cache: false
+      - name: Write the private-terms file
+        id: terms
+        env:
+          PRIVATE_TERMS: ${{ secrets.private-terms }}
+        run: |
+          umask 077
+          file="$RUNNER_TEMP/private-terms"
+          printf '%s\n' "$PRIVATE_TERMS" > "$file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          if [[ -n "$PRIVATE_TERMS" ]]; then echo 'present=true' >> "$GITHUB_OUTPUT"; fi
+      - name: Forbidden paths and private terms
+        working-directory: source
+        env:
+          FORBID_DIRS: ${{ inputs.forbid-dirs }}
+          ALLOW_PATHS: ${{ inputs.allow-paths }}
+          TERMS_FILE: ${{ steps.terms.outputs.file }}
+        run: |
+          set -f # names are split on spaces, never globbed
+          args=(--terms-file "$TERMS_FILE")
+          for name in $FORBID_DIRS; do args+=(--forbid-dir "$name"); done
+          while IFS= read -r pattern; do [[ -z "$pattern" ]] || args+=(--allow "$pattern"); done <<< "$ALLOW_PATHS"
+          bash ../devtools/tooling/bin/check-private-data.sh "${args[@]}"
+      - name: Commit messages
+        if: inputs.check-commit-messages && steps.terms.outputs.present == 'true'
+        working-directory: source
+        env:
+          TERMS_FILE: ${{ steps.terms.outputs.file }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "$BASE" =~ ^[0-9a-f]{40}$ && ! "$BASE" =~ ^0+$ ]] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then range="$BASE..$HEAD"; else range="$HEAD"; fi
+          message="$RUNNER_TEMP/commit-messages"
+          git log --format='%B' "$range" > "$message"
+          bash ../devtools/tooling/bin/check-private-data.sh --terms-file "$TERMS_FILE" --message "$message"
+      - name: Secret scan
+        working-directory: source
+        env:
+          SECRET_NAMES: ${{ inputs.secret-names }}
+          EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        run: |
+          set -f
+          args=()
+          for name in $SECRET_NAMES; do args+=(--secret-name "$name"); done
+          while IFS= read -r pattern; do [[ -z "$pattern" ]] || args+=(--exclude "$pattern"); done <<< "$EXCLUDE_PATHS"
+          node ../devtools/tooling/bin/scan-secrets.mjs "${args[@]}"
+      - name: Remove the private-terms file
+        if: always()
+        env:
+          TERMS_FILE: ${{ steps.terms.outputs.file }}
+        run: rm -f "$TERMS_FILE"

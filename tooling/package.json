@@ -1,0 +1,60 @@
+{
+  "name": "@hivemagnus/hive-devtools",
+  "version": "0.1.0",
+  "description": "Shared development tooling for the Hive:Magnus suite repositories: privacy and secret scans, the pinned Gitleaks wrapper, Node runtime and GitHub Actions pin checks, and npm release helpers",
+  "keywords": [
+    "hive",
+    "magnus",
+    "gitleaks",
+    "secret-scanning",
+    "github-actions",
+    "devtools"
+  ],
+  "author": "ChefTaco",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChefTaco/HiveCommon.git",
+    "directory": "tooling"
+  },
+  "homepage": "https://github.com/ChefTaco/HiveCommon/tree/main/tooling#readme",
+  "bugs": {
+    "url": "https://github.com/ChefTaco/HiveCommon/issues"
+  },
+  "type": "module",
+  "bin": {
+    "hive-check-private-data": "bin/check-private-data.sh",
+    "hive-scan-secrets": "bin/scan-secrets.mjs",
+    "hive-gitleaks": "bin/gitleaks.sh",
+    "hive-install-gitleaks": "bin/install-gitleaks.sh",
+    "hive-check-node-runtime": "bin/check-node-runtime.mjs",
+    "hive-check-action-pins": "bin/check-action-pins.mjs",
+    "hive-check-publish-environment": "bin/check-publish-environment.mjs",
+    "hive-publish-package": "bin/publish-package.mjs"
+  },
+  "exports": {
+    "./privacy-policy": "./lib/privacy-policy.mjs",
+    "./node-runtime": "./lib/node-runtime.mjs",
+    "./action-pins": "./lib/action-pins.mjs",
+    "./publish": "./lib/publish.mjs",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": "^24.22.3 || ^26.13.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:ci": "bash bin/install-gitleaks.sh && HIVE_DEVTOOLS_REQUIRE_GITLEAKS=1 node --test test/*.test.mjs"
+  }
+}
