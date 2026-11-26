@@ -6,6 +6,8 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-26
+
 ### Added
 
 - `/oathweave`: `followOathweaveRevocations()` follows Oathweave's session revocation feed
@@ -20,7 +22,7 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
   `OATHWEAVE_REVOCATION_TIMEOUT_MS`.
 - Shared development tooling for the suite repositories, outside the runtime kit. `tooling/` is
   the separate package `@hivemagnus/hive-devtools` (its own version, tests, README and
-  CHANGELOG; not published yet), with the privacy and secret scans, the pinned Gitleaks wrapper
+  CHANGELOG, published on its own as `@hivemagnus/hive-devtools` 0.1.0), with the privacy and secret scans, the pinned Gitleaks wrapper
   and installer, the Node runtime preflight, an Actions pin check and the npm release helpers
   that products copied. `.github/workflows/reusable-node-verify.yml`, `reusable-privacy.yml`,
   `reusable-gitleaks.yml` and `reusable-action-pins.yml` are reusable workflows
@@ -29,9 +31,13 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ### Upgrade notes
 
-- Nothing changes for consumers of `@hivemagnus/hive-common`: the package contents, exports and
-  dependencies are unchanged (`scripts/test-devtools-boundary.mjs` keeps the tooling out).
-  Products adopt the tooling one at a time; see `tooling/README.md`.
+- `followOathweaveRevocations()` reads Oathweave's revocation feed, which Oathweave serves from
+  2.6.0; against an older Oathweave the feed answers 404 and the follower reports it through
+  `onError` and keeps retrying with backoff. It needs a service token readable with `iam:tokens:introspect` or
+  `iam:sessions:revoke`. Nothing else changes for existing callers: the addition is a new export
+  and no dependencies changed.
+- The development tooling is not part of this package (`scripts/test-devtools-boundary.mjs` keeps
+  it out). Products adopt `@hivemagnus/hive-devtools` one at a time; see `tooling/README.md`.
 
 ## [0.7.0] - 2026-11-26
 
@@ -364,7 +370,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.5.1...v0.6.0
