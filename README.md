@@ -7,7 +7,7 @@ request IDs and trace context, read the Hive Registry, log safely and publish Hi
 - ESM only, TypeScript with `.d.ts` output, strict types.
 - One runtime dependency (`jose`); `hono` is an optional peer.
 - Each module is its own subpath, so a product loads only what it uses.
-- `/contracts`, `/errors`, `/fetch`, `/feed`, `/execution`, `/retry`, `/artifact` and `/sse` are isomorphic, so the browser UI can use them too.
+- `/contracts`, `/errors`, `/fetch`, `/feed`, `/execution`, `/retry`, `/artifact`, `/sse` and `/audit` are isomorphic, so the browser UI can use them too.
 
 ```bash
 npm install @hivemagnus/hive-common
@@ -30,6 +30,7 @@ npm install @hivemagnus/hive-common
 | [`/sse`](#sse) | Follow a server-sent event stream with cursor reconnect | Node, browser |
 | [`/fetch`](#fetch) | Outbound fetch with a deadline and a response-size limit | Node, browser |
 | [`/rate-limit`](#rate-limit) | Client address behind trusted proxies, keyed token-bucket limiter, 429 envelope | Node |
+| [`/audit`](#audit) | HiveAuditRecord v1 type and validator, export cursor and query, detail redaction, page builder | Node, browser |
 | [`/secrets`](#secrets) | Constant-time comparison, digest-checked static tokens, bearer header parsing | Node |
 | [`/contracts`](#contracts) | Isomorphic types and validators, request IDs, `Retry-After` | Node, browser |
 | [`/hono`](#hono) | Hono middleware | Node |
@@ -632,6 +633,49 @@ answered by `errorHandler()` or `hiveHandler()`. `headers: true` adds `RateLimit
 `clientAddressOf(req, trusted)` resolve it without limiting. For budgets that are not per request
 (per account, per action) call `enforceRateLimit(limiter, key)` or build the error with
 `rateLimitError(result)`.
+### audit
+
+The suite audit export, `GET <api>/v1/audit/export?after=<cursor>&limit=<n>` (HiveAuditRecord
+v1, oldest first), which Cindertrace's collector reads with an Oathweave service token:
+
+```ts
+import { auditAction, auditDetails, auditExportPage, auditRecordId, parseAuditExportQuery } from '@hivemagnus/hive-common/audit';
+
+app.get('/v1/audit/export', requirePermission(['hiveskills:audit:read']), c => {
+  const { after, limit } = parseAuditExportQuery(new URL(c.req.url).searchParams); // 400 on a bad query or cursor
+  const rows = db.auditAfter(after?.id ?? 0, limit);
+  return c.json(auditExportPage(rows, {
+    limit,
+    position: row => ({ id: row.id }),
+    toRecord: row => ({
+      id: auditRecordId('hiveskills', row.id), product: 'hiveskills', occurredAt: row.createdAt,
+      action: auditAction(row.action), outcome: 'success', actor: { type: 'user', id: row.actor },
+      details: auditDetails(JSON.parse(row.details), { dropKeys: ['body'] }),
+    }),
+    onDropped: count => metrics.auditDropped(count),
+  }));
+});
+```
+
+`HiveAuditRecord` is `{ id, product, occurredAt, action, outcome, actor: { type, id, issuer?,
+displayName? }, target?: { type?, id? }, subject?: { actorId?, agentRef?, nodeId? }, details }`.
+`validateHiveAuditRecord(value, { strict })` and `validateHiveAuditPage()` check it against
+`HIVE_AUDIT_LIMITS`, the strictest of what the suite's producers and the collector accept: `id`
+is `<product>:audit:<[A-Za-z0-9._:-]{1,200}>`, `occurredAt` RFC 3339 UTC, `action` dotted
+lowercase with at least two segments (at most 128 characters), and `details` flat scalars of at
+most 4 KiB. Like the HiveEvent validators they drop unknown fields unless `strict` is set.
+
+`auditExportPage(rows, options)` takes up to `limit` rows read after the cursor, maps each with
+`toRecord`, validates it strictly and skips (and counts, `onDropped`) one that is not exported or
+not valid, moving the cursor past it so a bad row never stalls the collector. `nextCursor` is the
+cursor of the last row read, on every page that read one, and null only when nothing was read.
+The cursor is opaque base64url JSON, `{ i }` for an ID-ordered store and `{ t, i }` for a
+`(time, id)` one (`encodeAuditCursor()`, `decodeAuditCursor()`); `parseAuditExportQuery()` reads
+it with `limit` (100 by default, at most 200). `auditDetails()` flattens a stored detail object to
+scalars through `/log` `redact()`, cuts strings at 512 characters, joins scalar arrays, counts
+other arrays, drops `dropKeys` and nested objects, and drops the longest values (setting
+`truncated: true`) until the result fits. `auditAction()` turns a stored name into a valid action
+(`Login` → `audit.login`); `auditRecordId()` builds the ID.
 
 ### secrets
 

@@ -17,7 +17,12 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 - `/hono`: `rateLimit()` middleware, `clientAddress()`, `getClientAddress()` and the
   `hiveClientAddress` context variable.
 - `/node-http`: `rateLimit()` and `clientAddressOf()`.
-
+- `/audit` (new, isomorphic): the HiveAuditRecord v1 type, `validateHiveAuditRecord()`,
+  `isHiveAuditRecord()`, `validateHiveAuditPage()` and `HIVE_AUDIT_LIMITS`; the opaque export
+  cursor (`encodeAuditCursor()`, `decodeAuditCursor()`, the `{ i }` and `{ t, i }` forms products
+  already issue); `parseAuditExportQuery()`; `auditDetails()` (flat, redacted, bounded details),
+  `auditAction()`, `auditRecordId()`; and `auditExportPage()`, which skips and counts rows that do
+  not form a valid record while moving the cursor past them.
 - `/sse`: `followSse()` options `maxEventBytes` (default 1 MiB, `DEFAULT_MAX_SSE_EVENT_BYTES`)
   and `idleTimeoutMs` (off by default), and the errors `SseHandlerError`,
   `SseEventTooLargeError` and `SseIdleTimeoutError`. The server's `retry:` field is honoured.

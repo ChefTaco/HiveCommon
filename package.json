@@ -90,6 +90,10 @@
       "types": "./dist/rate-limit/index.d.ts",
       "default": "./dist/rate-limit/index.js"
     },
+    "./audit": {
+      "types": "./dist/audit/index.d.ts",
+      "default": "./dist/audit/index.js"
+    },
     "./secrets": {
       "types": "./dist/secrets/index.d.ts",
       "default": "./dist/secrets/index.js"
