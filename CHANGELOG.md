@@ -6,6 +6,23 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- `/oathweave`: `createRecentAuthenticationVerifier()` and `verifyRecentAuthentication()` check a
+  step-up proof on the server: an Oathweave ID token from a fresh authorization request
+  (`prompt=login` / `max_age`). They verify the RS256 signature against the JWKS, the exact
+  issuer, an audience from an explicit list of trusted browser clients, the lifetime, and the
+  nonce, subject and session (`sid`) when given, then that `auth_time` is within the window
+  (default 300 s, at most 3600 s). Refusals are a `RecentAuthenticationError` (a `HiveError`)
+  with the codes `REAUTH_REQUIRED`, `REAUTH_STALE`, `REAUTH_INVALID` (401) and
+  `REAUTH_UNAVAILABLE` (503) and a `reason`. Also added: `isRecentAuthenticationError()`,
+  `RECENT_AUTHENTICATION_DEFAULT_MAX_AGE_SEC` and `RECENT_AUTHENTICATION_MAX_AGE_LIMIT_SEC`.
+
+### Upgrade notes
+
+- Additive: new exports only, no dependency or behaviour change for existing callers. Products
+  that took a password to confirm a sensitive action can accept this proof instead.
+
 ## [0.8.0] - 2026-11-26
 
 ### Added

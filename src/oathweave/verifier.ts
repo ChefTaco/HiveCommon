@@ -154,9 +154,18 @@ export function parseBearerToken(header: string | null | undefined): string | un
 }
 
 /** Errors from the key source that mean "could not get keys", not "bad token". */
-class KeySourceUnavailable extends Error {}
+export class KeySourceUnavailable extends Error {}
 
-function keySource(options: OathweaveVerifierOptions, request: typeof fetch, timeoutMs: number): JWTVerifyGetKey {
+/** Where a verifier gets its keys: a local JWKS, a jose resolver or the issuer's JWKS URL. */
+export interface KeySourceOptions {
+  readonly jwksUrl?: string | undefined;
+  readonly keys?: JSONWebKeySet | JWTVerifyGetKey | undefined;
+  readonly jwksCacheMaxAgeMs?: number | undefined;
+  readonly jwksCooldownMs?: number | undefined;
+}
+
+/** Shared with the recent-authentication check (not exported from the package). */
+export function keySource(options: KeySourceOptions, request: typeof fetch, timeoutMs: number): JWTVerifyGetKey {
   let resolver: JWTVerifyGetKey;
   if (typeof options.keys === 'function') resolver = options.keys;
   else if (options.keys) resolver = createLocalJWKSet(options.keys);
@@ -182,7 +191,7 @@ function keySource(options: OathweaveVerifierOptions, request: typeof fetch, tim
 }
 
 /** Map a jose or key-source failure onto a stable reason. */
-function mapVerifyError(error: unknown): OathweaveError {
+export function mapVerifyError(error: unknown): OathweaveError {
   if (error instanceof KeySourceUnavailable) return new OathweaveError('jwks_unavailable', { cause: error.cause });
   if (error instanceof joseErrors.JWTExpired) return new OathweaveError('expired');
   if (error instanceof joseErrors.JWTClaimValidationFailed) {

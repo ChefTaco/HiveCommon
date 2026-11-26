@@ -80,3 +80,16 @@ export {
   type OathweaveRevocationFollower,
   type OathweaveRevocationPoll,
 } from './revocations.js';
+export {
+  createRecentAuthenticationVerifier,
+  isRecentAuthenticationError,
+  RecentAuthenticationError,
+  RECENT_AUTHENTICATION_DEFAULT_MAX_AGE_SEC,
+  RECENT_AUTHENTICATION_MAX_AGE_LIMIT_SEC,
+  verifyRecentAuthentication,
+  type RecentAuthentication,
+  type RecentAuthenticationCheck,
+  type RecentAuthenticationCode,
+  type RecentAuthenticationOptions,
+  type RecentAuthenticationVerifier,
+} from './recent-auth.js';
