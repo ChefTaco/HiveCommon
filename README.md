@@ -876,6 +876,13 @@ npm run verify        # privacy tests, scans, typecheck, lint, tests, build, pac
 npm run test:coverage
 ```
 
+The `Downstream` workflow packs the change and installs it into HiveMem, HiveSkills, Emberpath,
+Ardent Project Studio, HiveXUI and Magnus (their default branches), then runs their typecheck and,
+where they have one, their Oathweave conformance test. It runs on pull requests, on `main` and
+weekly. Locally: `npm pack`, clone a product, then
+`node scripts/check-downstream.mjs <hivemem|hiveskills|emberpath|ardentstudio|hivexui|magnus> <checkout> <tarball>`.
+The consumer table in that script lists each product's directories and commands.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Security reports:
 [SECURITY.md](SECURITY.md).
 

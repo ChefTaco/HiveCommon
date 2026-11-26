@@ -1,0 +1,77 @@
+name: Downstream
+
+# Installs this change's packed tarball into the suite products that depend on HiveCommon and
+# runs their typecheck (and Oathweave conformance test, where they have one). The consumer
+# table is scripts/check-downstream.mjs. It reads only public repositories, with no token.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hive-common-downstream-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  pack:
+    name: Pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.1
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: mkdir -p pack && npm pack --pack-destination pack
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hive-common-tarball
+          path: pack/*.tgz
+          retention-days: 3
+
+  consumer:
+    name: ${{ matrix.consumer }}
+    needs: pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { consumer: hivemem, repository: ChefTaco/HiveMem }
+          - { consumer: hiveskills, repository: ChefTaco/HiveSkills }
+          - { consumer: emberpath, repository: ChefTaco/Emberpath }
+          - { consumer: ardentstudio, repository: ChefTaco/ArdentStudio }
+          - { consumer: hivexui, repository: ChefTaco/HiveXUI }
+          - { consumer: magnus, repository: ChefTaco/magnus }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: hive-common
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.repository }}
+          persist-credentials: false
+          path: consumer
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hive-common-tarball
+          path: pack
+      - name: Typecheck and conformance against this HiveCommon
+        run: node hive-common/scripts/check-downstream.mjs "${{ matrix.consumer }}" consumer pack/*.tgz
