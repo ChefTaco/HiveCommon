@@ -209,13 +209,17 @@ describe('parseHiveError legacy shapes', () => {
 
 describe('isomorphism', () => {
   it('the isomorphic modules import no Node built-ins and only each other', () => {
-    const isomorphic = ['errors', 'contracts', 'fetch', 'feed', 'execution', 'retry', 'artifact', 'sse'];
-    for (const name of isomorphic) {
-      const source = readFileSync(new URL(`../src/${name}/index.ts`, import.meta.url), 'utf8');
+    const isomorphic = ['errors', 'contracts', 'fetch', 'feed', 'execution', 'retry', 'artifact', 'sse', 'audit'];
+    // Unexported files the isomorphic modules may share; they follow the same rules.
+    const shared = ['internal/cursor.ts', 'log/redact.ts'];
+    const allowed = (path: string | undefined): boolean => isomorphic.some(other => path === `../${other}/index.js`)
+      || shared.some(file => path === `../${file.replace(/\.ts$/, '.js')}`);
+    for (const file of [...isomorphic.map(name => `${name}/index.ts`), ...shared]) {
+      const source = readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
       expect(source).not.toMatch(/from ['"](?:node:|fs|path|crypto|http|https|os|async_hooks)/);
       expect(source).not.toMatch(/\bprocess\.|\bBuffer\b/);
       const imports = [...source.matchAll(/from ['"]([^'"]+)['"]/g)].map(match => match[1]);
-      expect(imports.every(path => isomorphic.some(other => path === `../${other}/index.js`))).toBe(true);
+      expect(imports.every(allowed), file).toBe(true);
     }
     // The two the browser UI vendors stay self-contained.
     for (const name of ['errors', 'contracts']) {
