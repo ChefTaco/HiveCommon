@@ -54,6 +54,19 @@ describe('createServiceTokenProvider', () => {
     expect([...new URLSearchParams(calls[0]!.init.body as string).keys()]).toEqual(['grant_type', 'client_id', 'client_secret']);
   });
 
+  it('can authenticate with HTTP Basic instead of the form body', async () => {
+    const { provider, calls } = harness([() => json({ access_token: 'token-1' })], { clientAuth: 'client_secret_basic', clientId: 'ardent studio:1', clientSecret: 'p@ss/wörd+', scope: 'a b' });
+    await provider.token();
+    const { init } = calls[0]!;
+    const headers = init.headers as Record<string, string>;
+    expect(headers['content-type']).toBe('application/x-www-form-urlencoded');
+    // RFC 6749 2.3.1: form-urlencode each part, then base64 `id:secret`.
+    expect(headers['authorization']).toBe(`Basic ${btoa('ardent+studio%3A1:p%40ss%2Fw%C3%B6rd%2B')}`);
+    expect(Object.fromEntries(new URLSearchParams(init.body as string))).toEqual({ grant_type: 'client_credentials', scope: 'a b' });
+    expect(init.body).not.toContain('p%40ss');
+    expect(() => createServiceTokenProvider({ tokenUrl: TOKEN_URL, clientId: 'c', clientSecret: 's', clientAuth: 'private_key_jwt' as never })).toThrow(/clientAuth/);
+  });
+
   it('shares one request between concurrent callers', async () => {
     let release!: (response: Response) => void;
     const { provider, calls } = harness([() => new Promise<Response>(resolve => { release = resolve; })]);

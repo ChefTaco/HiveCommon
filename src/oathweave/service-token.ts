@@ -59,6 +59,13 @@ export interface ServiceTokenProviderOptions {
   readonly clientId: string;
   /** The client secret. Sent only to `tokenUrl`; never logged or put in an error. */
   readonly clientSecret: string;
+  /**
+   * How the client authenticates (RFC 6749 section 2.3.1): `client_secret_post` (the default)
+   * sends `client_id` and `client_secret` in the form body; `client_secret_basic` sends them in
+   * an HTTP Basic `Authorization` header instead, which keeps the secret out of servers and
+   * proxies that log request bodies.
+   */
+  readonly clientAuth?: 'client_secret_post' | 'client_secret_basic';
   /** Sent as the `scope` form field when set. */
   readonly scope?: string | undefined;
   /** Sent as the `audience` form field when set, and checked against the issued JWT (see `verifyAudience`). */
@@ -143,6 +150,12 @@ function nonNegative(value: number | undefined, fallback: number, name: string, 
   return value;
 }
 
+/** RFC 6749 section 2.3.1: each part form-urlencoded, joined with `:`, then base64. */
+function basicCredentials(clientId: string, clientSecret: string): string {
+  const encode = (value: string): string => new URLSearchParams({ v: value }).toString().slice(2);
+  return `Basic ${btoa(`${encode(clientId)}:${encode(clientSecret)}`)}`;
+}
+
 function defaultRefreshAfter(lifetimeMs: number): number {
   return Math.min(lifetimeMs * 0.8, lifetimeMs - 30_000);
 }
@@ -157,6 +170,8 @@ export function createServiceTokenProvider(options: ServiceTokenProviderOptions)
   assertOathweaveEndpoint(options.tokenUrl, 'tokenUrl', { allowInsecureLoopback: options.allowInsecureLoopback ?? false });
   if (typeof options.clientId !== 'string' || !options.clientId) throw new TypeError('Service token clientId is required');
   if (typeof options.clientSecret !== 'string' || !options.clientSecret) throw new TypeError('Service token clientSecret is required');
+  const clientAuth = options.clientAuth ?? 'client_secret_post';
+  if (clientAuth !== 'client_secret_post' && clientAuth !== 'client_secret_basic') throw new TypeError("Service token clientAuth must be 'client_secret_post' or 'client_secret_basic'");
   const { tokenUrl, clientId, clientSecret, scope, audience } = options;
   const request: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
   const now = options.now ?? (() => Date.now());
@@ -180,7 +195,10 @@ export function createServiceTokenProvider(options: ServiceTokenProviderOptions)
 
   async function fetchToken(): Promise<string> {
     const startedAt = now();
-    const form = new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret });
+    const form = new URLSearchParams({ grant_type: 'client_credentials' });
+    const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
+    if (clientAuth === 'client_secret_basic') headers['authorization'] = basicCredentials(clientId, clientSecret);
+    else { form.set('client_id', clientId); form.set('client_secret', clientSecret); }
     if (scope) form.set('scope', scope);
     if (audience) form.set('audience', audience);
     try {
@@ -189,7 +207,7 @@ export function createServiceTokenProvider(options: ServiceTokenProviderOptions)
       try {
         const response = await request(tokenUrl, {
           method: 'POST',
-          headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+          headers,
           body: form.toString(),
           redirect: 'error',
           signal: deadline,

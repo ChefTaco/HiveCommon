@@ -217,10 +217,16 @@ describe('readiness sharing', () => {
     return { checks: [{ name: 'db', check }], runs: () => runs };
   }
 
-  it('runs every check on every request by default', async () => {
-    const { checks, runs } = counting();
-    const health = createHealth({ checks });
+  it('shares concurrent runs by default, and runs every check on every request with readyCacheMs: false', async () => {
+    const shared = counting();
+    const health = createHealth({ checks: shared.checks });
     await Promise.all([health.ready(), health.ready(), health.handle('/health/ready')]);
+    expect(shared.runs()).toBe(1);
+    await health.ready();
+    expect(shared.runs()).toBe(2);
+    const { checks, runs } = counting();
+    const unshared = createHealth({ checks, readyCacheMs: false });
+    await Promise.all([unshared.ready(), unshared.ready(), unshared.handle('/health/ready')]);
     expect(runs()).toBe(3);
   });
 
@@ -262,6 +268,6 @@ describe('readiness sharing', () => {
   });
 
   it('validates readyCacheMs', () => {
-    for (const value of [-1, Number.NaN, Infinity, '5' as never]) expect(() => createHealth({ readyCacheMs: value })).toThrow(/readyCacheMs/);
+    for (const value of [-1, Number.NaN, Infinity, '5' as never, true as never]) expect(() => createHealth({ readyCacheMs: value })).toThrow(/readyCacheMs/);
   });
 });

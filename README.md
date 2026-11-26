@@ -115,8 +115,11 @@ refetched, at most every 30 s, when a token names an unknown `kid`); `iss` is on
 - **User:** `actorType: "USER"`, a `sessionId`, a `clientId` other than the subject, string-array
   `permissions` and (optional) `roles`. With `userinfoUrl`, the session is confirmed online; the
   answer is shared for 10 s from when the request started (failures for 2 s), or not at all with
-  `sessionCacheTtlMs: 0`. A userinfo answer over 64 KiB (`OATHWEAVE_USERINFO_MAX_BYTES`) is a 503
-  `identity_unavailable`.
+  `sessionCacheTtlMs: 0`. When a product learns of a sign-out or revocation, it drops the cached
+  answers with `verifier.invalidateSession(sessionId)` or `verifier.invalidateSubject(sub)` (or
+  all of them with `clearSessionCache()`), so the next request asks userinfo again and a short
+  cache no longer delays the sign-out. A userinfo answer over 64 KiB
+  (`OATHWEAVE_USERINFO_MAX_BYTES`) is a 503 `identity_unavailable`.
 - **Service:** `clientId` (or `client_id`) equals `sub`, `actorType: "SERVICE_ACCOUNT"`,
   `token_type: "access"`, no session.
 
@@ -226,7 +229,10 @@ longer handed out 5 s before it expires, and concurrent callers share one reques
 After a failed request no new one starts for 5 s. With `audience` set, an issued JWT whose `aud`
 does not include it is refused. Each of these is an option (`refreshAfterMs`, `expiryMarginMs`,
 `minLifetimeMs`, `maxLifetimeMs`, `defaultLifetimeSec`, `clampToTokenExpiry`, `failureBackoffMs`,
-`serveStaleWhileRefreshing`, `verifyAudience`, `timeoutMs`, `maxResponseBytes`).
+`serveStaleWhileRefreshing`, `verifyAudience`, `timeoutMs`, `maxResponseBytes`). The client
+authenticates with `client_id` and `client_secret` in the form body (`clientAuth:
+'client_secret_post'`, the default) or with HTTP Basic (`clientAuth: 'client_secret_basic'`), which
+keeps the secret out of servers and proxies that log request bodies.
 
 Failures are a `ServiceTokenError`: a `HiveError` with status 503, code `auth_unavailable` and a
 `reason` (`backoff`, `http`, `network`, `timeout`, `malformed_response`, `expired_token`,
@@ -321,9 +327,9 @@ createHealth({ service: 'hive-skills', liveBody: standard => ({ status: 'ok', se
 ```
 
 `readyCacheMs` bounds how often readiness probes the dependencies, which matters when the
-endpoint is reachable without authentication: `0` makes requests that arrive during a run share
-it, and a positive number also serves the finished result for that many milliseconds. Unset (the
-default), every request runs every check.
+endpoint is reachable without authentication: `0` (the default) makes requests that arrive during
+a run share it, and a positive number also serves the finished result for that many milliseconds;
+use 1000-2000 for an internet-facing product. `false` runs every check on every request.
 
 ### context
 

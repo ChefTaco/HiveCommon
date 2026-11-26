@@ -88,14 +88,15 @@ export interface HealthOptions<L extends object = LiveBody> {
    */
   readonly liveBody?: LiveBodyOverride<L>;
   /**
-   * For `createHealth()` (and so the adapters): share readiness runs. Unset, every readiness
-   * request runs every check, as before. `0` shares a run only between requests that arrive
-   * while it is in progress. A positive number also serves the finished result (its `time` and
-   * latencies included) for that many milliseconds. Readiness is often reachable without
+   * For `createHealth()` (and so the adapters): share readiness runs. `0` (the default) shares a
+   * run between requests that arrive while it is in progress, so concurrent probes cost one run.
+   * A positive number also serves the finished result (its `time` and latencies included) for
+   * that many milliseconds; 1000-2000 suits an internet-facing product. `false` runs every check
+   * on every request (the behaviour before 0.7). Readiness is often reachable without
    * authentication, so this bounds how hard a caller can make the service probe its
    * dependencies. The stand-alone `readiness()` function never shares.
    */
-  readonly readyCacheMs?: number;
+  readonly readyCacheMs?: number | false;
 }
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } as const;
@@ -222,15 +223,15 @@ export function createHealth<L extends object = LiveBody>(options: HealthOptions
   assertLiveBody(options.liveBody);
   // Fail at startup, not on every readiness request.
   assertCheckNames(options.checks ?? []);
-  const cacheMs = options.readyCacheMs;
-  if (cacheMs !== undefined && (typeof cacheMs !== 'number' || !Number.isFinite(cacheMs) || cacheMs < 0)) {
-    throw new TypeError('readyCacheMs must be a non-negative number');
+  const cacheMs = options.readyCacheMs ?? 0;
+  if (cacheMs !== false && (typeof cacheMs !== 'number' || !Number.isFinite(cacheMs) || cacheMs < 0)) {
+    throw new TypeError('readyCacheMs must be a non-negative number or false');
   }
   const now = options.now ?? (() => Date.now());
   let running: Promise<HealthResponse<ReadyBody>> | undefined;
   let finished: { readonly response: HealthResponse<ReadyBody>; readonly until: number } | undefined;
   const ready = (): Promise<HealthResponse<ReadyBody>> => {
-    if (cacheMs === undefined) return readiness(options);
+    if (cacheMs === false) return readiness(options);
     if (finished && now() < finished.until) return Promise.resolve(finished.response);
     finished = undefined;
     running ??= readiness(options)
