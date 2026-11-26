@@ -229,3 +229,15 @@ describe('followSse idle timeout', () => {
     await expect(pending).rejects.toThrow('user left');
   });
 });
+
+describe('followSse idle timeout and slow handlers', () => {
+  it('does not count time spent in the handler as idle', async () => {
+    const source = tracked(['id: 1\ndata: a\n\n', 'event: done\ndata: b\n\n']);
+    const fetcher = vi.fn(async () => source.response);
+    const result = await followSse('/s', {
+      fetch: fetcher, idleTimeoutMs: 20, onEvent: () => new Promise(resolve => setTimeout(resolve, 60)), isTerminal: event => event.event === 'done',
+    });
+    expect(result).toMatchObject({ cursor: '1', reconnects: 0 });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});

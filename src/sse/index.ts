@@ -271,6 +271,8 @@ export async function followSse(url: string, options: FollowSseOptions): Promise
       for (;;) {
         armIdle();
         const { value, done } = await guarded(reader.read());
+        // Time spent in the handler is not the server being idle.
+        clearTimeout(timer);
         if (done) break;
         const events = parser.push(decoder.decode(value, { stream: true }));
         if (parser.retryMs !== undefined) serverRetryMs = parser.retryMs;
