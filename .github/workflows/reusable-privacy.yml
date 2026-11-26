@@ -33,7 +33,7 @@ on:
         type: string
         default: ''
       exclude-paths:
-        description: Newline-separated JavaScript regexes of paths the secret scan skips (--exclude)
+        description: Newline-separated globs of repository-relative paths the secret scan skips (--exclude)
         type: string
         default: ''
       check-commit-messages:

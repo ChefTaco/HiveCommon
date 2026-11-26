@@ -57,7 +57,7 @@ hive-check-private-data [--root DIR] [--terms-file FILE] [--forbid-dir NAME]... 
 ### hive-scan-secrets
 
 ```text
-hive-scan-secrets [--staged] [--root DIR] [--secret-name NAME]... [--allow-home-user NAME]... [--exclude REGEX]...
+hive-scan-secrets [--staged] [--root DIR] [--secret-name NAME]... [--allow-home-user NAME]... [--exclude GLOB]...
 ```
 
 Without `--staged` it scans tracked and untracked, non-ignored files, and then the index, so a
@@ -69,8 +69,8 @@ AWS access keys, private-key headers, and literal values of credential variables
 characters, others 16). Explicit placeholders (`replace-...`, `change-me-...`, `...-example-...`,
 `${...}`, `<...>`) and expressions (`process.env.X`) are not findings. It also reports private
 network domain names and `/home/<name>` or `/Users/<name>` paths other than `operator`, `deploy`, `user`, `x`,
-`foo` and `bar` (add more with `--allow-home-user`). `--exclude` takes a JavaScript regex of
-repository-relative paths.
+`foo` and `bar` (add more with `--allow-home-user`). `--exclude` takes a glob of repository-relative
+paths (`fixtures/**`, `**/*.snap`).
 
 ### hive-gitleaks and hive-install-gitleaks
 
@@ -146,7 +146,7 @@ selects the `tooling/` scripts the workflow runs. Each job runs with `contents: 
 | Workflow | Inputs (default) |
 | --- | --- |
 | `reusable-node-verify.yml` | `node-versions` (`["24.22.3", "26.13.1"]`), `working-directory` (`.`), `install-command` (`npm ci`), `verify-command` (`npm test`), `audit` (`true`), `audit-level` (`high`), `fetch-depth` (`1`), `runs-on` (`ubuntu-24.04`), `timeout-minutes` (`30`) |
-| `reusable-privacy.yml` | `devtools-ref` (required), `forbid-dirs` (space-separated), `allow-paths` (one regex per line), `secret-names` (space-separated), `exclude-paths` (one regex per line), `check-commit-messages` (`true`), `runs-on`; secret `private-terms` (optional) |
+| `reusable-privacy.yml` | `devtools-ref` (required), `forbid-dirs` (space-separated), `allow-paths` (one regex per line), `secret-names` (space-separated), `exclude-paths` (one glob per line), `check-commit-messages` (`true`), `runs-on`; secret `private-terms` (optional) |
 | `reusable-gitleaks.yml` | `devtools-ref` (required), `config` (`.gitleaks.toml`), `build-command` and `scan-dirs` (optional build-output scan), `runs-on` |
 | `reusable-action-pins.yml` | `devtools-ref` (required), `require-version-comment` (`true`), `runs-on` |
 

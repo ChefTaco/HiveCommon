@@ -42,7 +42,7 @@ test('the packed package holds only the tooling and every bin runs from an insta
     for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
     execFileSync('git', ['init', '-q'], { cwd: temporary, env });
     execFileSync('git', ['add', 'package.json'], { cwd: temporary, env });
-    const scanned = run('hive-scan-secrets', ['--exclude', '^node_modules/', '--exclude', '\\.tgz$'], { env });
+    const scanned = run('hive-scan-secrets', ['--exclude', 'node_modules/**', '--exclude', '*.tgz'], { env });
     assert.equal(scanned.status, 0, scanned.stderr);
     assert.equal(run('hive-check-private-data', ['--staged'], { env }).status, 0);
     assert.equal(run('hive-gitleaks', ['--unknown'], { env }).status, 2);

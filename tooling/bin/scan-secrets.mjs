@@ -2,17 +2,17 @@
 // Scans working and staged content for credentials and private infrastructure without
 // printing any matching value.
 //
-//   hive-scan-secrets [--staged] [--root DIR] [--secret-name NAME]... [--allow-home-user NAME]... [--exclude REGEX]...
+//   hive-scan-secrets [--staged] [--root DIR] [--secret-name NAME]... [--allow-home-user NAME]... [--exclude GLOB]...
 //
 // Without --staged it scans tracked and untracked, non-ignored files, then the index as well,
 // so a sanitized working copy cannot hide a staged secret from the commit hook.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { matchesGlob, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { privateInfrastructureFindings, secretFindings } from '../lib/privacy-policy.mjs';
 
-const USAGE = 'Usage: hive-scan-secrets [--staged] [--root DIR] [--secret-name NAME]... [--allow-home-user NAME]... [--exclude REGEX]...';
+const USAGE = 'Usage: hive-scan-secrets [--staged] [--root DIR] [--secret-name NAME]... [--allow-home-user NAME]... [--exclude GLOB]...';
 
 export function parseArguments(argv) {
   const options = { staged: false, root: undefined, secretNames: [], homeUsers: [], exclude: [] };
@@ -27,7 +27,7 @@ export function parseArguments(argv) {
     else if (argument === '--root') options.root = value();
     else if (argument === '--secret-name') options.secretNames.push(value());
     else if (argument === '--allow-home-user') options.homeUsers.push(value());
-    else if (argument === '--exclude') options.exclude.push(new RegExp(value()));
+    else if (argument === '--exclude') options.exclude.push(value());
     else throw new Error(USAGE);
   }
   return options;
@@ -41,7 +41,8 @@ export function scan(options) {
     : ['ls-files', '--cached', '--others', '--exclude-standard', '-z'])).toString().split('\0').filter(Boolean);
   let failures = 0;
   for (const file of new Set(files)) {
-    if (options.exclude.some(pattern => pattern.test(file))) continue;
+    // Globs match repository-relative paths (`fixtures/**`, `**/*.snap`).
+    if (options.exclude.some(pattern => matchesGlob(file, pattern))) continue;
     // Tracked build output must be checked too; ignore rules exclude untracked build products.
     if (!options.staged && !existsSync(resolve(root, file))) continue;
     const content = (options.staged ? git('show', `:${file}`) : readFileSync(resolve(root, file))).toString();

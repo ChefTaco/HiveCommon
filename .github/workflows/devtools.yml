@@ -7,7 +7,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -29,13 +28,13 @@ jobs:
     name: Reusable privacy
     uses: ./.github/workflows/reusable-privacy.yml
     with:
-      devtools-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      devtools-ref: ${{ github.sha }}
 
   gitleaks:
     name: Reusable Gitleaks
     uses: ./.github/workflows/reusable-gitleaks.yml
     with:
-      devtools-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      devtools-ref: ${{ github.sha }}
       build-command: npm ci && npm run build
       scan-dirs: dist
 
@@ -43,4 +42,4 @@ jobs:
     name: Reusable Actions pins
     uses: ./.github/workflows/reusable-action-pins.yml
     with:
-      devtools-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      devtools-ref: ${{ github.sha }}

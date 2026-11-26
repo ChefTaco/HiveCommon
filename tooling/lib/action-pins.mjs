@@ -6,10 +6,34 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
-const USES = /^\s*(?:-\s+)?(?:\{\s*)?uses:\s*(["']?)([^\s"'#,}]+)\1\s*(?:[,}].*)?(#.*)?$/;
 const USES_KEY = /^\s*(?:-\s+)?(?:\{\s*)?uses:/;
 const PINNED = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[^@\s]+)?@[0-9a-f]{40}$/;
 const DIGEST = /^docker:\/\/[^@\s]+@sha256:[0-9a-f]{64}$/;
+
+/**
+ * Splits a `uses:` line into its reference and trailing comment, scanning by hand rather than
+ * with one backtracking regex. Returns undefined for a line it does not understand.
+ */
+function parseUses(line, key) {
+  let rest = line.slice(key.length).trimStart();
+  const quote = rest[0] === '"' || rest[0] === "'" ? rest[0] : '';
+  if (quote) rest = rest.slice(1);
+  const end = rest.search(/[\s"'#,}]/);
+  const reference = end === -1 ? rest : rest.slice(0, end);
+  let after = end === -1 ? '' : rest.slice(end);
+  if (quote) {
+    if (!after.startsWith(quote)) return undefined;
+    after = after.slice(1);
+  }
+  after = after.trimStart().replace(/\r$/, '');
+  let comment = '';
+  if (after.startsWith(',') || after.startsWith('}')) {
+    const hash = after.indexOf('#'); // flow mapping: `{ uses: a/b@sha } # v1`
+    if (hash !== -1) comment = after.slice(hash);
+  } else if (after.startsWith('#')) comment = after;
+  else if (after !== '') return undefined;
+  return reference ? { reference, comment } : undefined;
+}
 
 /**
  * Findings for one workflow or action file. With `requireVersionComment`, a pinned action also
@@ -20,13 +44,15 @@ const DIGEST = /^docker:\/\/[^@\s]+@sha256:[0-9a-f]{64}$/;
 export function actionPinFindings(text, { requireVersionComment = false } = {}) {
   const findings = [];
   for (const [index, line] of text.split('\n').entries()) {
-    const match = USES.exec(line);
-    if (!match) {
+    const key = USES_KEY.exec(line);
+    if (!key) continue;
+    const parsed = parseUses(line, key[0]);
+    if (!parsed) {
       // Fail closed on a `uses:` this parser does not understand rather than skipping it.
-      if (USES_KEY.test(line)) findings.push({ line: index + 1, uses: line.trim().slice(0, 120), rule: 'unrecognised uses: syntax' });
+      findings.push({ line: index + 1, uses: line.trim().slice(0, 120), rule: 'unrecognised uses: syntax' });
       continue;
     }
-    const reference = match[2];
+    const { reference, comment } = parsed;
     if (reference.startsWith('./')) continue;
     if (reference.startsWith('docker://')) {
       if (!DIGEST.test(reference)) findings.push({ line: index + 1, uses: reference, rule: 'container image is not pinned to a sha256 digest' });
@@ -34,7 +60,7 @@ export function actionPinFindings(text, { requireVersionComment = false } = {}) 
     }
     if (!PINNED.test(reference)) {
       findings.push({ line: index + 1, uses: reference, rule: 'not pinned to a full commit SHA' });
-    } else if (requireVersionComment && !/^#\s*(?:[A-Za-z0-9._-]*-)?v?\d+(?:\.\d+)*/.test(match[3] ?? '')) {
+    } else if (requireVersionComment && !/^#\s*(?:[A-Za-z0-9._-]*-)?v?\d+(?:\.\d+)*/.test(comment)) {
       findings.push({ line: index + 1, uses: reference, rule: 'pinned SHA has no version comment' });
     }
   }

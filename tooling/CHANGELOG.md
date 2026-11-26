@@ -13,7 +13,7 @@ First version, 0.1.0; it is published by hand once (see the README).
 - `hive-check-private-data`, `hive-scan-secrets` and the `./privacy-policy` export: the
   forbidden-path, private-terms and secret scans the suite repositories copied, from the most
   recent copy, with `--root`, `--terms-file`, `--forbid-dir`, `--allow`, `--secret-name`,
-  `--allow-home-user` and `--exclude` for what the copies hard-coded. `.cindertrace/` is
+  `--allow-home-user` and `--exclude GLOB` for what the copies hard-coded. `.cindertrace/` is
   forbidden by default next to `.ardent/` and `.magnus/`. A path that contains a private term is
   printed as `(path redacted)`,
   and a missing `--message` file exits 2 instead of passing.

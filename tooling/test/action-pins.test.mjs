@@ -39,9 +39,11 @@ test('rejects tags, branches, short SHAs, unpinned images and unparsable uses li
     '      - uses: docker://alpine:3.20',
     '      - uses: actions/checkout@v4 extra words',
     '    uses: ChefTaco/HiveCommon/.github/workflows/x.yml@main',
+    `      - uses: "actions/checkout@${sha}`,
+    '      - uses:',
   ].join('\n');
   const findings = actionPinFindings(workflow);
-  assert.deepEqual(findings.map(finding => finding.line), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(findings.map(finding => finding.line), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   assert.match(findings[5].rule, /digest/);
   assert.match(findings[6].rule, /unrecognised/);
 });
@@ -52,6 +54,11 @@ test('a version comment can be required next to each SHA', () => {
   assert.equal(actionPinFindings(`- uses: a/b@${sha} # hive-devtools-v0.1.0`, { requireVersionComment: true }).length, 0);
   assert.equal(actionPinFindings(`- uses: a/b@${sha} # latest`, { requireVersionComment: true }).length, 1);
   assert.equal(actionPinFindings(`- uses: a/b@${sha} # main`, { requireVersionComment: true }).length, 1);
+  assert.equal(actionPinFindings(`- { uses: a/b@${sha} } # v2\r`, { requireVersionComment: true }).length, 0);
+  // Long runs of comment characters are parsed in linear time.
+  const started = performance.now();
+  actionPinFindings(`- uses: a/b@${sha} }${'#'.repeat(200_000)}`, { requireVersionComment: true });
+  assert.ok(performance.now() - started < 1000);
 });
 
 test('scans workflows, composite actions and a root action, and the CLI reports file:line', () => {

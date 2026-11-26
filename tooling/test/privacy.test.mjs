@@ -88,7 +88,7 @@ test('the secret scanner checks staged blobs even when the working copy is sanit
     assert.match(result.stderr, /space in name.txt:1: npm token \[redacted\]/);
     assert.ok(!`${result.stderr}${result.stdout}`.includes(token));
     // --exclude and --root are honoured; a clean tree passes from any directory.
-    const excluded = spawnSync(process.execPath, [bin('scan-secrets.mjs'), '--root', root, '--exclude', '^space in name'],
+    const excluded = spawnSync(process.execPath, [bin('scan-secrets.mjs'), '--root', root, '--exclude', 'space in *'],
       { cwd: tmpdir(), env, encoding: 'utf8' });
     assert.equal(excluded.status, 0, excluded.stderr);
     assert.match(excluded.stdout, /Secret scan passed/);
