@@ -6,6 +6,8 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-28
+
 ### Added
 
 - `/sse`: `followSse()` option `onStateChange` reports the connection state for a UI:
@@ -493,7 +495,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.7.0...v0.8.0
