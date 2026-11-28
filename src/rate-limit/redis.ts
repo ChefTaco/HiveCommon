@@ -10,6 +10,7 @@ import type { RateLimitResult, RateLimitStore } from './index.js';
 export interface SlidingWindowPipeline {
   zremrangebyscore(key: string, min: string, max: number): unknown;
   zadd(key: string, score: number, member: string): unknown;
+  zremrangebyrank(key: string, start: number, stop: number): unknown;
   zcard(key: string): unknown;
   pexpire(key: string, milliseconds: number): unknown;
   /** Needed only for `retryAfter: 'oldest'`. */
@@ -61,7 +62,10 @@ function positiveInteger(name: string, value: number): number {
  * A `RateLimitStore` shared by every process and kept across restarts: a sliding window of `max`
  * requests per `windowMs` on one Redis sorted set per key. Every request is recorded, refused
  * ones included, so a client that keeps retrying stays refused; each `consume()` is one pipeline
- * (`ZREMRANGEBYSCORE`, `ZADD`, `ZCARD`, `PEXPIRE`, plus `ZRANGE` for `retryAfter: 'oldest'`).
+ * (`ZREMRANGEBYSCORE`, `ZADD`, `ZREMRANGEBYRANK`, `ZCARD`, `PEXPIRE`, plus `ZRANGE` for
+ * `retryAfter: 'oldest'`). A set never holds more than `max + 1` entries (the newest), so a
+ * flood costs no Redis memory beyond that. `cost` is a whole number of requests (default 1),
+ * unlike the in-memory limiter, whose cost may be fractional.
  *
  * A connection or command failure is thrown (the command's own error, or a
  * `RateLimitStoreError` for an unreadable reply), never read as "allowed", so the caller decides
@@ -90,6 +94,9 @@ export function createRedisSlidingWindowStore(options: RedisSlidingWindowStoreOp
       const pipeline = client().pipeline();
       pipeline.zremrangebyscore(redisKey, '-inf', time - windowMs);
       for (let index = 0; index < cost; index++) pipeline.zadd(redisKey, time, `${time}-${randomUUID()}`);
+      // Keep only the newest max + 1 entries, so a flood of refused requests cannot grow the set:
+      // the answer (refused once there are more than max) and the 'oldest' entry are the same.
+      pipeline.zremrangebyrank(redisKey, 0, -(max + 2));
       pipeline.zcard(redisKey);
       pipeline.pexpire(redisKey, windowMs);
       if (retryAfter === 'oldest') {
@@ -103,14 +110,14 @@ export function createRedisSlidingWindowStore(options: RedisSlidingWindowStoreOp
         if (!Array.isArray(reply)) throw new RateLimitStoreError('The rate-limit pipeline returned an unreadable reply');
         if (reply[0]) throw reply[0];
       }
-      const count = replies[cost + 1]?.[1];
+      const count = replies[cost + 2]?.[1];
       if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) throw new RateLimitStoreError('The rate-limit pipeline returned an unreadable count');
       const allowed = count <= max;
       let retryAfterMs = 0;
       if (!allowed) {
         retryAfterMs = windowMs;
         if (retryAfter === 'oldest') {
-          const entry = replies[cost + 3]?.[1];
+          const entry = replies[cost + 4]?.[1];
           const score = Array.isArray(entry) ? Number(entry[1]) : Number.NaN;
           if (Number.isFinite(score)) retryAfterMs = Math.min(windowMs, Math.max(1, score + windowMs - time));
         }

@@ -188,9 +188,9 @@ export const DEFAULT_MAX_FORWARDED_HOPS = 32;
  * - `forwarded`: read from `X-Forwarded-For`, past every trusted hop;
  * - `proxy_without_forwarding`: a trusted proxy sent no `X-Forwarded-For`; the proxy is the client;
  * - `invalid_forwarding`: a trusted hop reported something that is not an address (or too many
- *   trusted hops); the last trusted hop is the client. With `trustedHops`: the chain held an
- *   entry that is not an address, or fewer entries than `trustedHops`; the peer is the client,
- *   and a product that refuses such requests (400) checks for this decision;
+ *   trusted hops); the last trusted hop is the client. With `trustedHops`: one of the counted
+ *   entries is not an address, or the chain has fewer entries than `trustedHops`; the peer is
+ *   the client, and a product that refuses such requests (400) checks for this decision;
  * - `unknown_peer`: the socket address is not known; the client is `unknown`.
  */
 export type ClientAddressDecision = 'direct' | 'forwarded' | 'proxy_without_forwarding' | 'invalid_forwarding' | 'unknown_peer';
@@ -215,12 +215,13 @@ export interface ResolveClientAddressOptions {
    * Count a fixed number of proxies instead of walking the trusted ranges: when the peer is a
    * trusted proxy, the client is the `trustedHops`-th entry of `X-Forwarded-For` from the right
    * (1: the rightmost, the address the peer received the request from). Only the peer must be
-   * in `trusted`; the proxies in front of it are counted, not looked up. Every entry of the
-   * chain must be an IP address and there must be at least `trustedHops` of them, or the
-   * decision is `invalid_forwarding` (the peer is the address); a trusted peer that sent no
-   * `X-Forwarded-For` is `proxy_without_forwarding` as without this option. 0 never reads
-   * `X-Forwarded-For` (`direct`). An integer from 0 to `maxHops`; the chain itself is read
-   * whole (its length is bounded by the server's header size limit).
+   * in `trusted`; the proxies in front of it are counted, not looked up. Only the rightmost
+   * `trustedHops` entries are read: entries further left were written by the client and are
+   * ignored, whatever they hold. A counted entry that is not an IP address, or a chain with
+   * fewer than `trustedHops` entries, is `invalid_forwarding` (the peer is the address); a
+   * trusted peer that sent no `X-Forwarded-For` is `proxy_without_forwarding` as without this
+   * option. 0 never reads `X-Forwarded-For` (`direct`). An integer from 0 to `maxHops`; the
+   * middlewares check it at setup.
    */
   readonly trustedHops?: number;
 }
@@ -259,16 +260,19 @@ function checkTrustedHops(trustedHops: number, maxHops: number): void {
   }
 }
 
-/** `trustedHops` mode: the client is the n-th entry from the right of a fully valid chain. */
+/**
+ * `trustedHops` mode: the client is the n-th entry from the right. Only the n counted entries are
+ * read; everything left of them was written by the client and is ignored, so a client cannot
+ * make its request fall back to the proxy's address by sending a malformed header.
+ */
 function countedHops(peer: string, hops: readonly string[], trustedHops: number): ClientAddress {
-  const addresses: string[] = [];
-  for (const hop of hops) {
-    const address = normalizeIpAddress(hop);
-    if (address === undefined) return { address: peer, peer, decision: 'invalid_forwarding' };
-    addresses.push(address);
+  if (hops.length < trustedHops) return { address: peer, peer, decision: 'invalid_forwarding' };
+  let client: string | undefined;
+  for (let index = hops.length - 1; index >= hops.length - trustedHops; index--) {
+    client = normalizeIpAddress(hops[index]);
+    if (client === undefined) return { address: peer, peer, decision: 'invalid_forwarding' };
   }
-  if (addresses.length < trustedHops) return { address: peer, peer, decision: 'invalid_forwarding' };
-  return { address: addresses[addresses.length - trustedHops] as string, peer, decision: 'forwarded' };
+  return { address: client as string, peer, decision: 'forwarded' };
 }
 
 // ---------------------------------------------------------------------------------------

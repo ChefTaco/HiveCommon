@@ -790,15 +790,18 @@ their /64 (`ipv6PrefixLength`), since one host usually holds a whole prefix.
 
 For a fixed proxy chain, `trustedHops: n` counts instead of walking the ranges: when the peer is
 trusted, the client is the `n`-th entry from the right of `X-Forwarded-For` (1, the rightmost, is
-the address the peer received the request from), and only the peer must be in `trusted`. A chain
-with an entry that is not an address, or fewer than `n` entries, is `invalid_forwarding` (and a
-missing header `proxy_without_forwarding`), attributed to the peer; a product that answers those
-with a 400 checks the decision. `trustedHops: 0` never reads the header.
+the address the peer received the request from), and only the peer must be in `trusted`. Only the
+`n` counted entries are read: anything further left was written by the client and is ignored, so
+garbage there cannot push the request onto the proxy's address. A counted entry that is not an
+address, or a chain of fewer than `n` entries, is `invalid_forwarding` (and a missing header
+`proxy_without_forwarding`), attributed to the peer; a product that answers those with a 400
+checks the decision. `trustedHops: 0` never reads the header. The middlewares check the value at
+setup.
 
 **Limiter.** `createRateLimiter({ limit, windowMs, burst?, maxKeys? })` is a keyed token bucket:
 up to `burst` (default `limit`) tokens per key, refilled continuously at `limit` per `windowMs`.
 `consume(key, cost?)` returns `{ allowed, limit, remaining, retryAfterMs, resetMs }`; a refusal
-spends nothing. `peek()`, `reset()` (after a successful sign-in, say) and `clear()` manage keys.
+spends nothing, and `cost` (1) may be fractional. `peek()`, `reset()` (after a successful sign-in, say) and `clear()` manage keys.
 State is per process and holds at most `maxKeys` (10 000) keys, dropping the least recently used
 (counted in `limiter.evictions`, and reported to `onEvict(key)`); several instances that must
 share a budget pass a shared `RateLimitStore` (any object with `consume()`, which may be async).
@@ -806,9 +809,11 @@ share a budget pass a shared `RateLimitStore` (any object with `consume()`, whic
 **Redis sliding window.** `createRedisSlidingWindowStore({ redis, windowMs, max, keyPrefix?,
 retryAfter? })` is that shared store: `max` requests per key in any `windowMs`, kept in one Redis
 sorted set per key, so every process shares it and it survives restarts. Refused requests are
-recorded too, so a client that keeps retrying stays refused. HiveCommon takes no Redis
+recorded too, so a client that keeps retrying stays refused, yet a set holds at most the newest
+`max + 1` entries, so a flood costs no more Redis memory than that. `cost` must be a whole number
+of requests here (default 1), unlike the in-memory limiter's. HiveCommon takes no Redis
 dependency: `redis` is anything with an ioredis-style `pipeline()` (`zremrangebyscore`, `zadd`,
-`zcard`, `pexpire`, `exec`; `zrange` for `retryAfter: 'oldest'`), such as an ioredis client, or a
+`zremrangebyrank`, `zcard`, `pexpire`, `exec`; `zrange` for `retryAfter: 'oldest'`), such as an ioredis client, or a
 function returning one. The key passed to `consume()` (after `keyPrefix`, as given) is the Redis
 key, so a product keeps its key format. `retryAfter: 'window'` (the default) tells a refused
 client to wait a whole window; `'oldest'` computes the wait from the entry whose departure lets
@@ -836,10 +841,19 @@ handler stops. `refusal` holds `key`, `client`, `result`, `retryAfterSeconds`, `
 default `error`:
 
 ```ts
+// Hono
 rateLimit({
   limiter: c => (c.req.method === 'GET' ? reads : writes),
   respond: (c, refusal) => c.json({ error: 'RATE_LIMITED', message: 'Too many requests. Please try again later.' }, 429),
 });
+
+// node:http: respond writes the 429 and the call returns; the handler must stop there.
+const limit = rateLimit({ limiter: store, respond: (req, res) => sendJson(res, 429, { success: false, error: { code: 'RATE_LIMITED' } }) });
+createServer(hiveHandler(async (req, res) => {
+  const outcome = await limit(req, res);
+  if (outcome.refusal) return; // already answered: never fall through to the handler
+  sendJson(res, 200, await work(req));
+}));
 ```
 
 `trustedHops` is passed to the client resolution. Adapters for another framework call
@@ -888,7 +902,11 @@ cursor of the last row read, on every page that read one, and null only when not
 The cursor is opaque base64url JSON, `{ i }` for an ID-ordered store and `{ t, i }` for a
 `(time, id)` one (`encodeAuditCursor()`, `decodeAuditCursor()`). `decodeAuditCursor()` also reads
 the legacy `{ id }` form some products issued before (`eyJpZCI6NX0` is `{ id: 5 }`), and
-`auditExportPage()` takes `encodeCursor(position)` for a product that keeps issuing its own form; `parseAuditExportQuery()` reads
+`auditExportPage()` takes `encodeCursor(position)` for a product that keeps issuing its own form.
+Every cursor, the default or a product's, must be what the query accepts (1 to 512 characters of
+`[A-Za-z0-9._~:-]`): `encodeAuditCursor()` throws for a position too long for that (a string id
+and time of more than about 180 characters together) rather than issue a cursor the export
+would refuse; `parseAuditExportQuery()` reads
 it with `limit` (100 by default, at most 200). `auditDetails()` flattens a stored detail object to
 scalars through `/log` `redact()`, cuts strings at 512 characters, joins scalar arrays, counts
 other arrays, drops `dropKeys` and nested objects, and drops the longest values (setting

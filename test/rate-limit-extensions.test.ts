@@ -37,6 +37,16 @@ function fakeRedis(options: { zrange?: boolean } = {}) {
             return 1;
           });
         },
+        zremrangebyrank(key, start, stop) {
+          queue.push(() => {
+            const set = sets.get(key) ?? [];
+            const from = start < 0 ? set.length + start : start;
+            const to = stop < 0 ? set.length + stop : stop;
+            if (from > to || to < 0) return 0;
+            const removed = set.splice(Math.max(0, from), to - Math.max(0, from) + 1);
+            return removed.length;
+          });
+        },
         zcard(key) { queue.push(() => (sets.get(key) ?? []).length); },
         pexpire(key, ms) { queue.push(() => { expiries.set(key, ms); return 1; }); },
         async exec() {
@@ -85,6 +95,9 @@ describe('createRedisSlidingWindowStore', () => {
     // Refused: the whole window by default, and the refusal is recorded too.
     expect(await store.consume('app:rl:192.0.2.1')).toEqual({ allowed: false, limit: 2, remaining: 0, retryAfterMs: 60_000, resetMs: 60_000 });
     expect(fake.sets.get('app:rl:192.0.2.1')).toHaveLength(3);
+    // A flood of refused requests keeps at most max + 1 entries, and stays refused.
+    for (let index = 0; index < 50; index++) expect((await store.consume('app:rl:192.0.2.1')).allowed).toBe(false);
+    expect(fake.sets.get('app:rl:192.0.2.1')).toHaveLength(3);
     expect(fake.expiries.get('app:rl:192.0.2.1')).toBe(60_000);
     // The full key is the Redis key: another client is separate.
     expect((await store.consume('app:rl:192.0.2.2')).allowed).toBe(true);
@@ -115,6 +128,13 @@ describe('createRedisSlidingWindowStore', () => {
     now = 40_000;
     // Three entries; one more is allowed once the first two have left: the second leaves at 90 000.
     expect(await store.consume('k')).toMatchObject({ allowed: false, retryAfterMs: 50_000 });
+    // A flood is capped at max + 1 entries; the wait is read from the newest of them.
+    now = 50_000;
+    for (let index = 0; index < 20; index++) await store.consume('k');
+    expect(fake.sets.get('k')).toHaveLength(3);
+    expect(await store.consume('k')).toMatchObject({ allowed: false, retryAfterMs: 60_000 });
+    now = 109_999;
+    expect((await store.consume('k')).allowed).toBe(false);
     // Allowed ones say 0.
     expect((await store.consume('other')).retryAfterMs).toBe(0);
   });
@@ -200,9 +220,20 @@ describe('resolveClientAddress trustedHops', () => {
 
   it('reports a short or broken chain as invalid_forwarding with the peer as the address', () => {
     expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: '192.0.2.1', trusted, trustedHops: 2 })).toEqual({ address: '198.51.100.10', peer: '198.51.100.10', decision: 'invalid_forwarding' });
-    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: 'garbage, 192.0.2.1', trusted, trustedHops: 1 })).toMatchObject({ address: '198.51.100.10', decision: 'invalid_forwarding' });
-    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: '192.0.2.1,,192.0.2.2', trusted, trustedHops: 1 })).toMatchObject({ decision: 'invalid_forwarding' });
+    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: '192.0.2.1, garbage', trusted, trustedHops: 1 })).toMatchObject({ address: '198.51.100.10', decision: 'invalid_forwarding' });
+    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: '192.0.2.1,,192.0.2.2', trusted, trustedHops: 2 })).toMatchObject({ address: '198.51.100.10', decision: 'invalid_forwarding' });
+    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: '192.0.2.1, 192.0.2.2,', trusted, trustedHops: 1 })).toMatchObject({ decision: 'invalid_forwarding' });
     expect(resolveClientAddress({ peer: '198.51.100.10', trusted, trustedHops: 1 })).toMatchObject({ address: '198.51.100.10', decision: 'proxy_without_forwarding' });
+  });
+
+  it('ignores client-written entries left of the counted hops, whatever they hold (regression)', () => {
+    // A client sends `X-Forwarded-For: x`; the proxy appends the address it saw. The client must
+    // not fall back to the proxy's address (and its shared bucket) by sending garbage.
+    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: 'garbage, 192.0.2.1', trusted, trustedHops: 1 })).toEqual({ address: '192.0.2.1', peer: '198.51.100.10', decision: 'forwarded' });
+    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: 'x, , not-an-ip, 192.0.2.1', trusted, trustedHops: 1 })).toMatchObject({ address: '192.0.2.1', decision: 'forwarded' });
+    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: 'x, 192.0.2.1, 203.0.113.9', trusted, trustedHops: 2 })).toMatchObject({ address: '192.0.2.1', decision: 'forwarded' });
+    const long = `${'garbage,'.repeat(500)}192.0.2.1`;
+    expect(resolveClientAddress({ peer: '198.51.100.10', forwardedFor: long, trusted, trustedHops: 1 })).toMatchObject({ address: '192.0.2.1' });
   });
 
   it('ignores X-Forwarded-For from an untrusted peer or with 0 hops, and validates the count', () => {
@@ -253,6 +284,13 @@ describe('spendRequestLimit', () => {
     await expect(limitRequest({ limiter, prefix: 'q:' }, trusted, request, undefined, undefined)).resolves.toMatchObject({ result: { allowed: true } });
     // No store: the client is still resolved, nothing is spent.
     expect(await spendRequestLimit(undefined, {}, trusted, request, () => 'never', 1)).toEqual({ client: { address: '192.0.2.1', peer: '192.0.2.1', decision: 'direct' }, result: undefined });
+  });
+
+  it('the middlewares refuse a bad trustedHops at setup', () => {
+    const limiter = createRateLimiter({ limit: 1, windowMs: 1000 });
+    expect(() => honoRateLimit({ limiter, trustedHops: 1.5 })).toThrow(RangeError);
+    expect(() => nodeRateLimit({ limiter, trustedHops: -1 })).toThrow(RangeError);
+    expect(() => honoRateLimit({ limiter, trustedHops: 2 })).not.toThrow();
   });
 
   it('passes trustedHops to the client resolution', async () => {

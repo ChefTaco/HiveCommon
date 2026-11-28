@@ -153,6 +153,21 @@ describe('cursors and queries', () => {
     }
   });
 
+  it('never issues a cursor its own query parser refuses', () => {
+    // Every position the encoder accepts yields a cursor parseAuditExportQuery() reads back.
+    const fits = { id: 'i'.repeat(180), at: 't'.repeat(180) };
+    const cursor = encodeAuditCursor(fits);
+    expect(cursor.length).toBeLessThanOrEqual(512);
+    expect(parseAuditExportQuery(new URLSearchParams({ after: cursor })).after).toEqual(fits);
+    expect(parseAuditExportQuery(new URLSearchParams({ after: encodeAuditCursor({ id: 'i'.repeat(256) }) })).after).toEqual({ id: 'i'.repeat(256) });
+    // Too long together (or with characters that JSON escapes): refused at encoding, not by the collector later.
+    expect(() => encodeAuditCursor({ id: 'i'.repeat(256), at: 't'.repeat(256) })).toThrow(/512/);
+    expect(() => encodeAuditCursor({ id: '\u0001'.repeat(100) })).toThrow(/512/);
+    expect(() => auditExportPage([1], { limit: 1, toRecord: () => undefined, position: () => ({ id: 'i'.repeat(256), at: 't'.repeat(256) }) })).toThrow(TypeError);
+    // A cursor longer than the query allows is not decoded either.
+    expect(decodeAuditCursor(encodeCursor({ i: 'i'.repeat(400) }))).toBeUndefined();
+  });
+
   it('reads the legacy { id } cursor form', () => {
     // A product cursor issued before the shared format: base64url JSON { id }.
     expect(encodeCursor({ id: 5 })).toBe('eyJpZCI6NX0');
@@ -215,7 +230,7 @@ describe('auditExportPage', () => {
     expect(page.nextCursor).toBe(encodeCursor({ id: 4 }));
     expect(decodeAuditCursor(page.nextCursor as string)).toEqual({ id: 4 });
     expect(auditExportPage([], { limit: 4, toRecord, position: row => ({ id: row.id }), encodeCursor: () => 'unused' }).nextCursor).toBeNull();
-    for (const bad of ['', 'x'.repeat(2001), 5 as unknown as string]) {
+    for (const bad of ['', 'x'.repeat(513), 'a/b', 'a=b', 'a b', 5 as unknown as string]) {
       expect(() => auditExportPage(rows, { limit: 1, toRecord, position: row => ({ id: row.id }), encodeCursor: () => bad })).toThrow(TypeError);
     }
   });

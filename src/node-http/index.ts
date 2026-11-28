@@ -311,6 +311,8 @@ export interface NodeRateLimit {
  */
 export function rateLimit(options: NodeRateLimitOptions): NodeRateLimit {
   const trusted = resolveTrustedProxies(options.trustedProxies);
+  // Resolving once at setup validates trustedHops, so a bad value fails at startup.
+  if (options.trustedHops !== undefined) resolveClientAddress({ peer: undefined, trusted, trustedHops: options.trustedHops });
   const { limiter, respond } = options;
   return async (req, res) => {
     const store = typeof limiter === 'function' ? limiter(req) : limiter;

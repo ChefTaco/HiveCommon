@@ -25,9 +25,10 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
   `data:` line (as `EventSource`); type `ParseSseStreamOptions`.
 - `/rate-limit`: `createRedisSlidingWindowStore({ redis, windowMs, max, keyPrefix?, retryAfter?,
   now? })`, a shared `RateLimitStore` on one Redis sorted set per key: refused requests count
-  too, it survives restarts, and the key passed to `consume()` (after `keyPrefix`) is the Redis
-  key. It needs only a structural ioredis-style `pipeline()` (`SlidingWindowRedis`,
-  `SlidingWindowPipeline`), so HiveCommon takes no Redis dependency. `retryAfter: 'window'`
+  too, it survives restarts, each set keeps at most the newest `max + 1` entries (so a flood
+  cannot grow it), and the key passed to `consume()` (after `keyPrefix`) is the Redis key;
+  `cost` is a whole number. It needs only a structural ioredis-style `pipeline()` (`SlidingWindowRedis`,
+  `SlidingWindowPipeline`, including `zremrangebyrank`), so HiveCommon takes no Redis dependency. `retryAfter: 'window'`
   (default) or `'oldest'` (from the entry scores, needs `zrange`). A command error, a discarded
   pipeline or an unreadable reply is thrown (`RateLimitStoreError` for the last two), never read
   as allowed.
@@ -36,8 +37,9 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
   An entry that could never match (`10.*`, `010.*.*.*`, `10.*.*.*/8`) throws at startup.
 - `/rate-limit`: `resolveClientAddress()` option `trustedHops`: count a fixed number of proxies
   from the right of `X-Forwarded-For` behind a trusted peer instead of walking the trusted
-  ranges. A short chain or one with an entry that is not an address is `invalid_forwarding`,
-  attributed to the peer. Also a middleware option.
+  ranges. Only the counted entries are read; client-written entries further left are ignored. A
+  short chain or a counted entry that is not an address is `invalid_forwarding`, attributed to
+  the peer. Also a middleware option, checked when the middleware is built.
 - `/rate-limit`: `createRateLimiter()` option `onEvict(key)` and `limiter.evictions`, for keys
   dropped to stay within `maxKeys`.
 - `/rate-limit`: `spendRequestLimit()`, the middlewares' request step that returns a refusal
@@ -49,7 +51,8 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
   `/node-http` `respond(req, res, refusal)` when called with `res`, returning the outcome with
   `refusal` set.
 - `/audit`: `auditExportPage()` option `encodeCursor(position)` for a product that keeps issuing
-  its own cursor form.
+  its own cursor form; its result must be what the export query accepts (1 to 512 characters of
+  `[A-Za-z0-9._~:-]`), or the page throws a TypeError.
 - `/oathweave`: `createOathweaveVerifier()` may omit `issuer` (or pass `[]`) for a service-only
   verifier of native-issuer tokens (`nativeIssuers` non-empty, `accept: 'service'`,
   `nativeIssuerAccept: 'service'`), so no placeholder https issuer is needed.
@@ -77,6 +80,11 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 - `/audit`: `decodeAuditCursor()` and `parseAuditExportQuery()` now accept the legacy cursor
   form `{ id }` (base64url JSON with a single `id`, for example `eyJpZCI6NX0`) as the position
   `{ id }`. Such a cursor used to be refused with 400 `invalid_cursor`.
+- `/audit`: `encodeAuditCursor()` (and so `auditExportPage()`) throws a TypeError for a position
+  whose cursor would be longer than the 512 characters `parseAuditExportQuery()` accepts (a string
+  id and time of more than about 180 characters together). It used to return that cursor, which
+  the export then refused with 400 on the collector's next page. `decodeAuditCursor()` returns
+  undefined for such a cursor, as the query parser already refused it.
 - `/hono` and `/node-http`: `HonoRateLimitOptions` and `NodeRateLimitOptions` no longer extend
   `RateLimitMiddlewareOptions` as a whole: their `limiter` is wider (a store or a function), so
   they extend it without `limiter`. Code that only builds these options is unaffected.

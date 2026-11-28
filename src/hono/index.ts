@@ -340,6 +340,8 @@ export interface HonoRateLimitOptions extends Omit<RateLimitMiddlewareOptions, '
  */
 export function rateLimit(options: HonoRateLimitOptions): MiddlewareHandler {
   const trusted = resolveTrustedProxies(options.trustedProxies);
+  // Resolving once at setup validates trustedHops, so a bad value fails at startup.
+  if (options.trustedHops !== undefined) resolveClientAddress({ peer: undefined, trusted, trustedHops: options.trustedHops });
   const peerAddress = options.peerAddress ?? nodePeerAddress;
   const { limiter, respond } = options;
   return async (c, next) => {

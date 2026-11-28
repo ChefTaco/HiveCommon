@@ -15,6 +15,9 @@ export interface FeedQueryOptions {
   readonly maxLimit?: number;
 }
 
+/** What `parseFeedQuery()` accepts as `after`: the alphabet and length every issued cursor must keep to. */
+export const FEED_CURSOR_PATTERN = /^[A-Za-z0-9._~:-]{1,512}$/;
+
 /** Read `after` and `limit` from a query. Throws a 400 HiveError on malformed values. */
 export function parseFeedQuery(
   query: URLSearchParams | Readonly<Record<string, string | readonly string[] | undefined>>,
@@ -44,7 +47,7 @@ export function parseFeedQuery(
     limit = Math.min(Number(rawLimit), maxLimit);
   }
   const after = read('after');
-  if (after !== undefined && after !== '' && !/^[A-Za-z0-9._~:-]{1,512}$/.test(after)) {
+  if (after !== undefined && after !== '' && !FEED_CURSOR_PATTERN.test(after)) {
     throw new HiveError('invalid_query', 'after must be a cursor from a previous page', { status: 400 });
   }
   return { after: after || undefined, limit };
