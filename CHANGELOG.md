@@ -18,17 +18,76 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
   called once per 401; a 401 on the connection right after a renewal ends the follow with
   `SseStatusError(401)`, while a later 401 (after a connection opened) is renewed again. `false`
   stops as before; a rejection counts as a failed connection and is retried with backoff.
+- `/sse`: `parseSseStream(body, { maxEventBytes?, signal?, requireData?, onRetry? })`, the
+  incremental parser `followSse()` uses as an async generator over one response body: linear,
+  bounded by `maxEventBytes` (1 MiB by default, `SseEventTooLargeError`), cancels the body when
+  the loop ends early, throws or the signal aborts. `requireData` yields only events with a
+  `data:` line (as `EventSource`); type `ParseSseStreamOptions`.
+- `/rate-limit`: `createRedisSlidingWindowStore({ redis, windowMs, max, keyPrefix?, retryAfter?,
+  now? })`, a shared `RateLimitStore` on one Redis sorted set per key: refused requests count
+  too, it survives restarts, and the key passed to `consume()` (after `keyPrefix`) is the Redis
+  key. It needs only a structural ioredis-style `pipeline()` (`SlidingWindowRedis`,
+  `SlidingWindowPipeline`), so HiveCommon takes no Redis dependency. `retryAfter: 'window'`
+  (default) or `'oldest'` (from the entry scores, needs `zrange`). A command error, a discarded
+  pipeline or an unreadable reply is thrown (`RateLimitStoreError` for the last two), never read
+  as allowed.
+- `/rate-limit`: `trustedProxies()` accepts IPv4 wildcards such as `10.*.*.*` or `192.0.2.*`
+  (four parts, each `*` or an exact octet; IPv4 only), matching Oathweave's `TRUSTED_PROXY_IPS`.
+  An entry that could never match (`10.*`, `010.*.*.*`, `10.*.*.*/8`) throws at startup.
+- `/rate-limit`: `resolveClientAddress()` option `trustedHops`: count a fixed number of proxies
+  from the right of `X-Forwarded-For` behind a trusted peer instead of walking the trusted
+  ranges. A short chain or one with an entry that is not an address is `invalid_forwarding`,
+  attributed to the peer. Also a middleware option.
+- `/rate-limit`: `createRateLimiter()` option `onEvict(key)` and `limiter.evictions`, for keys
+  dropped to stay within `maxKeys`.
+- `/rate-limit`: `spendRequestLimit()`, the middlewares' request step that returns a refusal
+  (`RateLimitRefusal`: `key`, `client`, `result`, `retryAfterSeconds`, `headers`, `error`)
+  instead of throwing; types `RateLimitRequestOptions` and `RequestLimitOutcome`.
+- `/hono` and `/node-http`: `rateLimit()` takes `limiter` as a function of the request, choosing
+  the store per request (undefined lets the request through), and `respond` to answer a refusal
+  in the product's own shape: Hono `respond(c, refusal)` with the 429 headers already set on `c`;
+  `/node-http` `respond(req, res, refusal)` when called with `res`, returning the outcome with
+  `refusal` set.
+- `/audit`: `auditExportPage()` option `encodeCursor(position)` for a product that keeps issuing
+  its own cursor form.
+- `/oathweave`: `createOathweaveVerifier()` may omit `issuer` (or pass `[]`) for a service-only
+  verifier of native-issuer tokens (`nativeIssuers` non-empty, `accept: 'service'`,
+  `nativeIssuerAccept: 'service'`), so no placeholder https issuer is needed.
+- `/oathweave`: `jwksStaleIfErrorMs` keeps trusting the last good JWKS for that long after its
+  fetch when a refresh fails (at most a day, `OATHWEAVE_JWKS_MAX_STALE_MS`), and
+  `onJwksRefresh({ keys, fetchedAt })` / `onJwksError({ error, stale, ageMs })` report fetches
+  for metrics. With any of them the key set is read with a 256 KiB bound
+  (`OATHWEAVE_JWKS_MAX_BYTES`) and checked before jose sees it. Types `JwksRefreshOptions`,
+  `JwksRefreshEvent`, `JwksErrorEvent`.
+- `/log`: `redact()` options `keyPattern` (a regular expression or predicate for extra keys) and
+  `maskNonStrings` (`true`, or `'listed'` for keys from `keys`/`keyPattern` only) to mask numbers,
+  booleans and null under sensitive keys too; logger options `redactKeyPattern` and
+  `redactNonStrings`.
 
 ### Changed
 
 - `/sse`: a `Retry-After` on a transient refusal (408, 429, 5xx) now sets the wait before the next
   connection, capped at the policy's `maxMs` like the server's `retry:` field. It used to be
   ignored, so such a follower now reconnects no sooner than the server asked.
+- `/log`: `redactText()` (and so `redact()` on every string and every log line) now masks a
+  `name=value` or `name: value` pair whose name only ends in a secret word: `NODE_TOKEN=x`,
+  `db_password: x`, `"AGENT_SECRET":"x"`, `nodeToken=x`. The name is kept and the value masked.
+  Before, the name had to start at a word boundary, so these were left in clear. This is more
+  masking: a log or diagnostic line that showed such a value now shows `[REDACTED]`.
+- `/audit`: `decodeAuditCursor()` and `parseAuditExportQuery()` now accept the legacy cursor
+  form `{ id }` (base64url JSON with a single `id`, for example `eyJpZCI6NX0`) as the position
+  `{ id }`. Such a cursor used to be refused with 400 `invalid_cursor`.
+- `/hono` and `/node-http`: `HonoRateLimitOptions` and `NodeRateLimitOptions` no longer extend
+  `RateLimitMiddlewareOptions` as a whole: their `limiter` is wider (a store or a function), so
+  they extend it without `limiter`. Code that only builds these options is unaffected.
 
 ### Upgrade notes
 
 - Additive: without the new options `followSse()` behaves as in 0.10.0, except that it honours a
   refusal's `Retry-After` (at most the policy's `maxMs`, 15 s by default).
+- Every other new option is off by default. Two defaults change: `redactText()` masks more
+  (secret-word suffixes, see Changed), and audit exports accept `{ id }` cursors. Products that
+  layered their own suffix rule on `redactText()` (or a `{ id }` cursor decoder) can drop it.
 
 ## [0.10.0] - 2026-11-26
 

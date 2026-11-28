@@ -1,5 +1,6 @@
 /**
- * Client addresses behind trusted proxies, and a keyed token-bucket rate limiter.
+ * Client addresses behind trusted proxies, a keyed token-bucket rate limiter and a shared Redis
+ * sliding-window store (`createRedisSlidingWindowStore()`, structural: no Redis dependency).
  *
  * Framework-free and Node only (`node:net`). `/hono` `rateLimit()` and `/node-http`
  * `rateLimit()` apply it to requests and answer a refusal with a 429 envelope and `Retry-After`.
@@ -118,17 +119,32 @@ export interface TrustedProxies {
   readonly entries: readonly string[];
 }
 
+/** `10.*.*.*`: four dot-separated parts, each `*` or a decimal octet without leading zeros. */
+const IPV4_WILDCARD = /^(?:\*|25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:\*|25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
 /**
- * Parse a trusted-proxy list: IP addresses, CIDR ranges and the presets `loopback`, `private`
- * and `linklocal`, as an array or one comma- or space-separated string (an environment
- * variable). Empty or undefined trusts no proxy, so `X-Forwarded-For` is never read. Throws a
- * TypeError naming the first entry that is not valid.
+ * Parse a trusted-proxy list: IP addresses, CIDR ranges, IPv4 wildcards (`10.*.*.*`,
+ * `192.0.2.*`, `10.*.0.1`) and the presets `loopback`, `private` and `linklocal`, as an array or
+ * one comma- or space-separated string (an environment variable). Empty or undefined trusts no
+ * proxy, so `X-Forwarded-For` is never read. Throws a TypeError naming the first entry that is
+ * not valid.
+ *
+ * A wildcard has four parts, each `*` (any octet) or one octet that must match exactly; it
+ * matches IPv4 addresses only (an IPv4-mapped IPv6 address counts as its IPv4 address), never an
+ * IPv6 one. Host names are not accepted.
  */
 export function trustedProxies(config: string | readonly string[] | undefined | null): TrustedProxies {
   const raw = typeof config === 'string' ? config.split(/[\s,]+/) : [...(config ?? [])];
   const list = new BlockList();
   const entries: string[] = [];
+  const wildcards: Array<readonly string[]> = [];
   const add = (entry: string): void => {
+    if (entry.includes('*')) {
+      if (!IPV4_WILDCARD.test(entry)) throw new TypeError(`Not a trusted proxy address or range: ${entry}`);
+      wildcards.push(entry.split('.'));
+      entries.push(entry);
+      return;
+    }
     const [addressPart, prefixPart, ...extra] = entry.split('/');
     const address = normalizeIpAddress(addressPart);
     if (!address || extra.length || addressPart !== addressPart?.trim() || (prefixPart !== undefined && !/^\d{1,3}$/.test(prefixPart))) {
@@ -152,7 +168,12 @@ export function trustedProxies(config: string | readonly string[] | undefined | 
   return {
     has(address) {
       const normalized = normalizeIpAddress(address);
-      return normalized !== undefined && list.check(normalized, isIP(normalized) === 4 ? 'ipv4' : 'ipv6');
+      if (normalized === undefined) return false;
+      if (isIP(normalized) !== 4) return list.check(normalized, 'ipv6');
+      if (list.check(normalized, 'ipv4')) return true;
+      if (!wildcards.length) return false;
+      const octets = normalized.split('.');
+      return wildcards.some(parts => parts.every((part, index) => part === '*' || part === octets[index]));
     },
     entries,
   };
@@ -167,7 +188,9 @@ export const DEFAULT_MAX_FORWARDED_HOPS = 32;
  * - `forwarded`: read from `X-Forwarded-For`, past every trusted hop;
  * - `proxy_without_forwarding`: a trusted proxy sent no `X-Forwarded-For`; the proxy is the client;
  * - `invalid_forwarding`: a trusted hop reported something that is not an address (or too many
- *   trusted hops); the last trusted hop is the client;
+ *   trusted hops); the last trusted hop is the client. With `trustedHops`: the chain held an
+ *   entry that is not an address, or fewer entries than `trustedHops`; the peer is the client,
+ *   and a product that refuses such requests (400) checks for this decision;
  * - `unknown_peer`: the socket address is not known; the client is `unknown`.
  */
 export type ClientAddressDecision = 'direct' | 'forwarded' | 'proxy_without_forwarding' | 'invalid_forwarding' | 'unknown_peer';
@@ -188,6 +211,18 @@ export interface ResolveClientAddressOptions {
   readonly trusted: TrustedProxies;
   /** The most hops read from the right of `X-Forwarded-For`. 32. */
   readonly maxHops?: number;
+  /**
+   * Count a fixed number of proxies instead of walking the trusted ranges: when the peer is a
+   * trusted proxy, the client is the `trustedHops`-th entry of `X-Forwarded-For` from the right
+   * (1: the rightmost, the address the peer received the request from). Only the peer must be
+   * in `trusted`; the proxies in front of it are counted, not looked up. Every entry of the
+   * chain must be an IP address and there must be at least `trustedHops` of them, or the
+   * decision is `invalid_forwarding` (the peer is the address); a trusted peer that sent no
+   * `X-Forwarded-For` is `proxy_without_forwarding` as without this option. 0 never reads
+   * `X-Forwarded-For` (`direct`). An integer from 0 to `maxHops`; the chain itself is read
+   * whole (its length is bounded by the server's header size limit).
+   */
+  readonly trustedHops?: number;
 }
 
 /**
@@ -197,13 +232,15 @@ export interface ResolveClientAddressOptions {
  * written by the client and are never read, so a forged prefix changes nothing.
  */
 export function resolveClientAddress(options: ResolveClientAddressOptions): ClientAddress {
+  const maxHops = options.maxHops ?? DEFAULT_MAX_FORWARDED_HOPS;
+  if (options.trustedHops !== undefined) checkTrustedHops(options.trustedHops, maxHops);
   const peer = normalizeIpAddress(options.peer);
   if (peer === undefined) return { address: 'unknown', peer: undefined, decision: 'unknown_peer' };
-  if (!options.trusted.has(peer)) return { address: peer, peer, decision: 'direct' };
+  if (!options.trusted.has(peer) || options.trustedHops === 0) return { address: peer, peer, decision: 'direct' };
   const header = typeof options.forwardedFor === 'string' ? options.forwardedFor : options.forwardedFor ? options.forwardedFor.join(',') : '';
   if (!header.trim()) return { address: peer, peer, decision: 'proxy_without_forwarding' };
-  const maxHops = options.maxHops ?? DEFAULT_MAX_FORWARDED_HOPS;
   const hops = header.split(',');
+  if (options.trustedHops !== undefined) return countedHops(peer, hops, options.trustedHops);
   let vouching = peer;
   for (let index = hops.length - 1, read = 0; index >= 0; index--, read++) {
     if (read >= maxHops) return { address: vouching, peer, decision: 'invalid_forwarding' };
@@ -214,6 +251,24 @@ export function resolveClientAddress(options: ResolveClientAddressOptions): Clie
   }
   // Every hop is a trusted proxy (an internal caller): the leftmost one is the client.
   return { address: vouching, peer, decision: 'forwarded' };
+}
+
+function checkTrustedHops(trustedHops: number, maxHops: number): void {
+  if (typeof trustedHops !== 'number' || !Number.isInteger(trustedHops) || trustedHops < 0 || trustedHops > maxHops) {
+    throw new RangeError(`trustedHops must be an integer from 0 to ${maxHops}`);
+  }
+}
+
+/** `trustedHops` mode: the client is the n-th entry from the right of a fully valid chain. */
+function countedHops(peer: string, hops: readonly string[], trustedHops: number): ClientAddress {
+  const addresses: string[] = [];
+  for (const hop of hops) {
+    const address = normalizeIpAddress(hop);
+    if (address === undefined) return { address: peer, peer, decision: 'invalid_forwarding' };
+    addresses.push(address);
+  }
+  if (addresses.length < trustedHops) return { address: peer, peer, decision: 'invalid_forwarding' };
+  return { address: addresses[addresses.length - trustedHops] as string, peer, decision: 'forwarded' };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -230,6 +285,12 @@ export interface RateLimiterOptions {
    * (it starts again with a full bucket). 10 000.
    */
   readonly maxKeys?: number;
+  /**
+   * Called with the key dropped when a new key pushes the limiter past `maxKeys`, for a metric
+   * (never log the raw key if it holds an account name). Not called by `reset()` or `clear()`.
+   * An exception it throws is ignored.
+   */
+  readonly onEvict?: (key: string) => void;
   readonly now?: () => number;
 }
 
@@ -259,6 +320,8 @@ export interface RateLimiter extends RateLimitStore {
   clear(): void;
   /** Keys currently held. */
   readonly size: number;
+  /** Keys dropped so far to stay within `maxKeys` (see `onEvict`). */
+  readonly evictions: number;
 }
 
 export const DEFAULT_RATE_LIMIT_MAX_KEYS = 10_000;
@@ -283,6 +346,8 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
   const now = options.now ?? (() => Date.now());
   const ratePerMs = limit / windowMs;
   const buckets = new Map<string, { tokens: number; at: number }>();
+  const onEvict = options.onEvict;
+  let evictions = 0;
 
   const refilled = (key: string, time: number): number => {
     const bucket = buckets.get(key);
@@ -313,7 +378,12 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
       }
       const left = tokens - cost;
       buckets.delete(key);
-      if (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value as string);
+      if (buckets.size >= maxKeys) {
+        const evicted = buckets.keys().next().value as string;
+        buckets.delete(evicted);
+        evictions++;
+        try { onEvict?.(evicted); } catch { /* a metrics callback never changes the answer */ }
+      }
       buckets.set(key, { tokens: left, at: time });
       return result(true, left, 0);
     },
@@ -323,6 +393,7 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
     reset(key) { buckets.delete(key); },
     clear() { buckets.clear(); },
     get size() { return buckets.size; },
+    get evictions() { return evictions; },
   };
 }
 
@@ -361,6 +432,8 @@ export interface RateLimitMiddlewareOptions {
   readonly prefix?: string;
   /** Grouping of IPv6 clients for the default key (see `addressKey()`). */
   readonly ipv6PrefixLength?: number;
+  /** Count this many proxies from the right of `X-Forwarded-For` (see `resolveClientAddress()`). */
+  readonly trustedHops?: number;
   /** Send `RateLimit-*` headers on allowed and refused responses. Off by default. */
   readonly headers?: boolean;
   /** Called for every refusal, for metrics or a log line (never log the raw key if it holds an account name). */
@@ -383,6 +456,62 @@ export async function enforceRateLimit(store: RateLimitStore, key: string, cost?
   return result;
 }
 
+/** A refused request, for a product that answers it in its own shape (the middlewares' `respond`). */
+export interface RateLimitRefusal {
+  /** The full key that was spent from (with `prefix`). */
+  readonly key: string;
+  readonly client: ClientAddress;
+  readonly result: RateLimitResult;
+  /** `Retry-After` in whole seconds, at least 1. */
+  readonly retryAfterSeconds: number;
+  /** The headers of the default 429: `retry-after`, and the `ratelimit-*` ones when `headers` is on. */
+  readonly headers: Readonly<Record<string, string>>;
+  /** The default 429 `HiveError` (`rate_limited`), as `limitRequest()` throws it. */
+  readonly error: HiveError;
+}
+
+/** `RateLimitMiddlewareOptions` without the limiter, which `spendRequestLimit()` takes on its own. */
+export type RateLimitRequestOptions = Omit<RateLimitMiddlewareOptions, 'limiter'>;
+
+/** What `spendRequestLimit()` decided. `result` is undefined when the request was not limited. */
+export interface RequestLimitOutcome {
+  readonly client: ClientAddress;
+  readonly result: RateLimitResult | undefined;
+  /** Set when the request was refused. */
+  readonly refusal?: RateLimitRefusal;
+}
+
+/**
+ * The shared request step, without throwing: resolve the client, build the key and spend from
+ * `store`. A refusal is returned (after `onLimited`) for the caller to answer. Nothing is spent
+ * when `store` is undefined or `key` returns undefined. Exported for other adapters; most code
+ * uses a middleware.
+ */
+export async function spendRequestLimit(
+  store: RateLimitStore | undefined,
+  options: RateLimitRequestOptions,
+  trusted: TrustedProxies,
+  request: { readonly peer: string | null | undefined; readonly forwardedFor: string | readonly string[] | null | undefined },
+  key: ((client: ClientAddress) => string | undefined | Promise<string | undefined>) | undefined,
+  cost: number | undefined,
+): Promise<RequestLimitOutcome> {
+  const client = resolveClientAddress({
+    peer: request.peer, forwardedFor: request.forwardedFor, trusted,
+    ...(options.trustedHops === undefined ? {} : { trustedHops: options.trustedHops }),
+  });
+  if (!store) return { client, result: undefined };
+  const own = key ? await key(client) : addressKey(client.address, options.ipv6PrefixLength === undefined ? {} : { ipv6PrefixLength: options.ipv6PrefixLength });
+  if (own === undefined) return { client, result: undefined };
+  const fullKey = `${options.prefix ?? ''}${own}`;
+  const result = await store.consume(fullKey, cost);
+  if (result.allowed) return { client, result };
+  options.onLimited?.({ key: fullKey, client, result });
+  const error = rateLimitError(result, { headers: options.headers ?? false });
+  const headers = { ...(error.headers ?? {}) } as Record<string, string>;
+  const retryAfterSeconds = Number(headers['retry-after']);
+  return { client, result, refusal: { key: fullKey, client, result, retryAfterSeconds, headers, error } };
+}
+
 /**
  * The shared request step of the `/hono` and `/node-http` middlewares: resolve the client, build
  * the key and spend. Undefined when `key` returned undefined (the request is not limited).
@@ -395,14 +524,12 @@ export async function limitRequest(
   key: ((client: ClientAddress) => string | undefined | Promise<string | undefined>) | undefined,
   cost: number | undefined,
 ): Promise<{ readonly client: ClientAddress; readonly result: RateLimitResult | undefined }> {
-  const client = resolveClientAddress({ peer: request.peer, forwardedFor: request.forwardedFor, trusted });
-  const own = key ? await key(client) : addressKey(client.address, options.ipv6PrefixLength === undefined ? {} : { ipv6PrefixLength: options.ipv6PrefixLength });
-  if (own === undefined) return { client, result: undefined };
-  const fullKey = `${options.prefix ?? ''}${own}`;
-  const result = await options.limiter.consume(fullKey, cost);
-  if (!result.allowed) {
-    options.onLimited?.({ key: fullKey, client, result });
-    throw rateLimitError(result, { headers: options.headers ?? false });
-  }
+  const { client, result, refusal } = await spendRequestLimit(options.limiter, options, trusted, request, key, cost);
+  if (refusal) throw refusal.error;
   return { client, result };
 }
+
+export {
+  createRedisSlidingWindowStore, RateLimitStoreError,
+  type RedisSlidingWindowStoreOptions, type SlidingWindowPipeline, type SlidingWindowRedis,
+} from './redis.js';

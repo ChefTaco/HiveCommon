@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import {
   createOathweaveVerifier,
   isOathweaveError,
   OathweaveError,
+  OATHWEAVE_JWKS_MAX_BYTES,
+  OATHWEAVE_JWKS_MAX_STALE_MS,
   OATHWEAVE_USERINFO_MAX_BYTES,
   parseBearerToken,
   type OathweaveFailureReason,
@@ -43,6 +45,7 @@ describe('configuration', () => {
     expect(() => verifier({ issuer: 'https://oathweave.example.test/#x' })).toThrow(/fragment/);
     expect(() => verifier({ issuer: 'not a url' })).toThrow(/not a valid URL/);
     expect(() => verifier({ issuer: [] })).toThrow(/At least one/);
+    expect(() => verifier({ issuer: undefined as never })).toThrow(/At least one/);
     expect(() => verifier({ audience: '' })).toThrow(/audience/);
     expect(() => verifier({ clockToleranceSec: -1 })).toThrow(/clockTolerance/);
     expect(() => verifier({ maxLifetimeSec: 0 })).toThrow(/maxLifetime/);
@@ -662,5 +665,102 @@ describe('authorization header and error mapping', () => {
   it('recognises OathweaveErrors', () => {
     expect(isOathweaveError(new OathweaveError('expired'))).toBe(true);
     expect(isOathweaveError(new Error('x'))).toBe(false);
+  });
+});
+
+describe('service-only verifier without an https issuer', () => {
+  const NATIVE = 'hive-iam';
+
+  it('accepts native-issuer service tokens with no https issuer configured', async () => {
+    const v = createOathweaveVerifier({ nativeIssuers: [NATIVE], accept: 'service', audience: AUDIENCE, keys: keys.jwks, now: () => NOW_MS });
+    expect(v.issuers).toEqual([]);
+    expect(v.nativeIssuers).toEqual([NATIVE]);
+    expect((await v.verifyService(await mint(keys, serviceClaims(), { iss: NATIVE }))).issuer).toBe(NATIVE);
+    // The https issuer is not accepted, and user tokens never are.
+    expect(await reason(v.verifyService(await mint(keys, serviceClaims())))).toBe('invalid_issuer');
+    expect(await reason(v.verify(await mint(keys, userClaims(), { iss: NATIVE }), { accept: 'user' }))).toBe('invalid_issuer');
+    const empty = createOathweaveVerifier({ issuer: [], nativeIssuers: [NATIVE], accept: 'service', audience: AUDIENCE, keys: keys.jwks, now: () => NOW_MS });
+    expect(empty.issuers).toEqual([]);
+  });
+
+  it('still needs an https issuer for anything but a native service-only verifier', () => {
+    const base = { audience: AUDIENCE, keys: keys.jwks };
+    expect(() => createOathweaveVerifier({ ...base })).toThrow(/At least one Oathweave issuer/);
+    expect(() => createOathweaveVerifier({ ...base, nativeIssuers: [NATIVE] })).toThrow(/At least one Oathweave issuer/);
+    expect(() => createOathweaveVerifier({ ...base, nativeIssuers: [NATIVE], accept: 'any' })).toThrow(/At least one Oathweave issuer/);
+    expect(() => createOathweaveVerifier({ ...base, nativeIssuers: [], accept: 'service' })).toThrow(/At least one Oathweave issuer/);
+    expect(() => createOathweaveVerifier({ ...base, nativeIssuers: [NATIVE], accept: 'service', nativeIssuerAccept: 'any' })).toThrow(/At least one Oathweave issuer/);
+  });
+});
+
+describe('JWKS stale-if-error and refresh hooks', () => {
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  it('reports refreshes and keeps the last good keys within jwksStaleIfErrorMs', async () => {
+    let failing = false;
+    const stub = stubFetch({ [JWKS_URL]: () => (failing ? new Response('', { status: 502 }) : Response.json(keys.jwks)) });
+    const onJwksRefresh = vi.fn();
+    const onJwksError = vi.fn();
+    const v = remoteVerifier({ fetch: stub.fetch, jwksCacheMaxAgeMs: 1, jwksStaleIfErrorMs: 60_000, onJwksRefresh, onJwksError });
+    const token = await mint(keys, userClaims());
+    await v.verify(token);
+    expect(onJwksRefresh).toHaveBeenCalledWith({ keys: keys.jwks.keys.length, fetchedAt: expect.any(Number) });
+    failing = true;
+    await pause(5);
+    expect((await v.verify(token)).kind).toBe('user');
+    expect(stub.calls).toHaveLength(2);
+    expect(onJwksError).toHaveBeenCalledWith({ error: expect.any(Error), stale: true, ageMs: expect.any(Number) });
+    // Recovery replaces the stale keys.
+    failing = false;
+    await pause(5);
+    await v.verify(token);
+    expect(onJwksRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers jwks_unavailable once the last good keys are older than the stale window', async () => {
+    let failing = false;
+    const stub = stubFetch({ [JWKS_URL]: () => { if (failing) throw new TypeError('connection refused'); return Response.json(keys.jwks); } });
+    const onJwksError = vi.fn();
+    const v = remoteVerifier({ fetch: stub.fetch, jwksCacheMaxAgeMs: 1, jwksStaleIfErrorMs: 1, onJwksError });
+    const token = await mint(keys, userClaims());
+    await v.verify(token);
+    failing = true;
+    await pause(10);
+    expect(await reason(v.verify(token))).toBe('jwks_unavailable');
+    expect(onJwksError).toHaveBeenCalledWith(expect.objectContaining({ stale: false }));
+  });
+
+  it('serves nothing stale before a first good fetch, and checks the key set it reads', async () => {
+    for (const route of [
+      () => new Response('', { status: 500 }),
+      () => new Response('not json', { status: 200 }),
+      () => Response.json({ nope: true }),
+      () => Response.json({ keys: ['not a key'] }),
+      () => Response.json([]),
+      () => new Response('x'.repeat(OATHWEAVE_JWKS_MAX_BYTES + 1), { status: 200 }),
+    ]) {
+      const onJwksError = vi.fn();
+      const v = remoteVerifier({ fetch: stubFetch({ [JWKS_URL]: route }).fetch, jwksStaleIfErrorMs: 60_000, onJwksError });
+      expect(await reason(v.verify(await mint(keys, userClaims())))).toBe('jwks_unavailable');
+      expect(onJwksError).toHaveBeenCalledWith({ error: expect.anything(), stale: false, ageMs: undefined });
+    }
+  });
+
+  it('ignores throwing hooks, keeps unknown kids refused and validates the options', async () => {
+    const stub = stubFetch({ [JWKS_URL]: () => Response.json(keys.jwks) });
+    const v = remoteVerifier({ fetch: stub.fetch, onJwksRefresh: () => { throw new Error('metrics down'); } });
+    expect((await v.verify(await mint(keys, userClaims()))).kind).toBe('user');
+    const other = await testKeys('k9');
+    const failingAfterFirst = stubFetch({ [JWKS_URL]: () => (failingAfterFirst.calls.length > 1 ? new Response('', { status: 503 }) : Response.json(keys.jwks)) });
+    const stale = remoteVerifier({ fetch: failingAfterFirst.fetch, jwksStaleIfErrorMs: 60_000, jwksCooldownMs: 0, onJwksError: () => { throw new Error('x'); } });
+    await stale.verify(await mint(keys, userClaims()));
+    expect(await reason(stale.verify(await mint(other, userClaims(), { kid: 'k9' })))).toBe('unknown_key');
+    for (const value of [-1, Number.NaN, OATHWEAVE_JWKS_MAX_STALE_MS + 1, '5' as never]) {
+      expect(() => remoteVerifier({ jwksStaleIfErrorMs: value })).toThrow(/jwksStaleIfErrorMs/);
+    }
+    expect(() => remoteVerifier({ onJwksError: 'log' as never })).toThrow(/onJwksError/);
+    expect(() => remoteVerifier({ onJwksRefresh: 1 as never })).toThrow(/onJwksRefresh/);
+    // Ignored with local keys.
+    expect(() => verifier({ jwksStaleIfErrorMs: 1000 })).not.toThrow();
   });
 });

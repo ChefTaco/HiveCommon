@@ -152,6 +152,25 @@ Two options make the claim rules stricter for products that always required more
   `'client_id'` (RFC 9068) or `'either'` (the default). When both claims are present they must
   agree in every mode.
 
+**JWKS refresh.** `jwksStaleIfErrorMs` keeps a product working through a short identity-provider
+outage: when a refresh fails, the last good key set is trusted again if it was fetched at most
+that long ago (and then for another `jwksCacheMaxAgeMs`), instead of answering 503
+`jwks_unavailable`. So a key set is never trusted longer than `jwksStaleIfErrorMs +
+jwksCacheMaxAgeMs` after its fetch; 0 (the default) never serves stale keys, and the most is a
+day (`OATHWEAVE_JWKS_MAX_STALE_MS`). A token with an unknown `kid` is still refused. For metrics,
+`onJwksRefresh({ keys, fetchedAt })` follows every successful fetch and `onJwksError({ error,
+stale, ageMs })` every failed one. With any of the three options the key set is read with a
+256 KiB bound (`OATHWEAVE_JWKS_MAX_BYTES`) and must be `{ keys: [ {...} ] }`.
+
+```ts
+createOathweaveVerifier({
+  issuer, audience, jwksUrl,
+  jwksCacheMaxAgeMs: 5 * 60_000,      // refresh every 5 minutes
+  jwksStaleIfErrorMs: 10 * 60_000,    // trust keys at most 15 minutes after their fetch
+  onJwksError: ({ stale }) => metrics.jwksRefreshFailures.inc({ stale: String(stale) }),
+});
+```
+
 #### Native issuers
 
 Oathweave signs browser-client tokens with its https issuer, but client-credentials tokens with its
@@ -177,6 +196,11 @@ const verifier = createOathweaveVerifier({
   refused with `invalid_issuer` before any session check. Suite user tokens come from browser
   clients, which Oathweave always signs with the https issuer. `nativeIssuerAccept: 'any'` (or
   `'user'`) changes that for a product that really takes native user tokens.
+- A verifier that only ever accepts native-issuer service tokens (Oathweave without a browser
+  issuer) may omit `issuer`: `createOathweaveVerifier({ nativeIssuers: ['hive-iam'], accept:
+  'service', audience, jwksUrl })`. Any other configuration without an https issuer (another
+  `accept`, or `nativeIssuerAccept` other than `service`) is refused at startup; no placeholder
+  issuer is needed.
 - Every other rule (audience, lifetime, principal rules) is unchanged. `principal.issuer` is the
   native identifier, so identity and service links keyed by `(issuer, clientId)` keep working.
   `verifier.nativeIssuers` lists them; `verifier.issuers` still lists only the https issuers.
@@ -575,6 +599,21 @@ a failed connection). A 401 on the connection right after a renewal ends the fol
 `SseStatusError(401)`; a later 401, after a connection opened, is renewed again. `false` stops at
 once, and a rejection counts as a failed connection.
 
+To parse one response yourself (no reconnect), `parseSseStream(body, options)` is the same
+incremental parser as an async generator:
+
+```ts
+for await (const event of parseSseStream(response.body!, { maxEventBytes: 4 * 1024 * 1024, signal })) {
+  handle(event); // { id?, event, data }
+}
+```
+
+It is linear and bounded like `followSse()` (`SseEventTooLargeError` past `maxEventBytes`, 1 MiB by
+default), drops a final event that never got its blank line, and cancels the body when the loop
+ends early, throws or `signal` aborts (the generator then throws the signal's reason).
+`requireData: true` yields only events with a `data:` line, as `EventSource` does; by default an
+`id:`-only event is yielded too, as `followSse()` handles it. `onRetry` reports `retry:` values.
+
 ### registry
 
 ```ts
@@ -622,6 +661,17 @@ A key is masked when its name contains a secret-looking word, which also catches
 as `authorizationId`. List those in `allowKeys` (`redact(value, { allowKeys: ['authorizationId'] })`,
 or `redactAllowKeys` on the logger): they are no longer masked for their name, while their values
 are still scrubbed like any other string.
+
+For names a product masks beyond the built-in list, `keys` matches exactly and `keyPattern` by a
+regular expression or predicate (`redact(value, { keyPattern: /token|secret|passw(or)?d/i })`);
+both win over `allowKeys`. `maskNonStrings: true` also masks numbers, booleans and null under
+every sensitive key, and `'listed'` only under keys from `keys` or `keyPattern`, so the built-in
+names keep their counts and flags. The logger takes the same as `redactKeyPattern` and
+`redactNonStrings`.
+
+`redactText()` masks `name=value` and `name: value` pairs whose name ends in a secret word
+(`password`, `passwd`, `secret`, `token`, `api_key`, `private_key`, ...), also behind a prefix:
+`NODE_TOKEN=x`, `db_password: x` and `"AGENT_SECRET":"x"` keep their name and lose the value.
 
 ### events
 
@@ -732,17 +782,43 @@ gives `unknown`. The result's `decision` (`direct`, `forwarded`, `proxy_without_
 `invalid_forwarding`, `unknown_peer`) is for metrics. `trustedProxies()` takes addresses, CIDR
 ranges and the presets `loopback`, `private` (RFC 1918 and `fc00::/7`, a Compose network) and
 `linklocal`, as a list or one comma- or space-separated string; empty trusts none, and a bad entry
-throws at startup. `normalizeIpAddress()` reads socket and header forms (`::ffff:192.0.2.1`,
+throws at startup. IPv4 wildcards (`10.*.*.*`, `192.0.2.*`, `10.*.0.1`) match part by part: four
+parts, each `*` or one exact octet, IPv4 addresses only (an IPv4-mapped address counts as its IPv4
+form); host names are not accepted. `normalizeIpAddress()` reads socket and header forms (`::ffff:192.0.2.1`,
 `[2001:db8::1]:443`, `192.0.2.1:5000`, zone indexes) and `addressKey()` groups IPv6 clients by
 their /64 (`ipv6PrefixLength`), since one host usually holds a whole prefix.
+
+For a fixed proxy chain, `trustedHops: n` counts instead of walking the ranges: when the peer is
+trusted, the client is the `n`-th entry from the right of `X-Forwarded-For` (1, the rightmost, is
+the address the peer received the request from), and only the peer must be in `trusted`. A chain
+with an entry that is not an address, or fewer than `n` entries, is `invalid_forwarding` (and a
+missing header `proxy_without_forwarding`), attributed to the peer; a product that answers those
+with a 400 checks the decision. `trustedHops: 0` never reads the header.
 
 **Limiter.** `createRateLimiter({ limit, windowMs, burst?, maxKeys? })` is a keyed token bucket:
 up to `burst` (default `limit`) tokens per key, refilled continuously at `limit` per `windowMs`.
 `consume(key, cost?)` returns `{ allowed, limit, remaining, retryAfterMs, resetMs }`; a refusal
 spends nothing. `peek()`, `reset()` (after a successful sign-in, say) and `clear()` manage keys.
-State is per process and holds at most `maxKeys` (10 000) keys, dropping the least recently used;
-several instances that must share a budget pass their own `RateLimitStore` (any object with
-`consume()`, which may be async, such as a Redis script).
+State is per process and holds at most `maxKeys` (10 000) keys, dropping the least recently used
+(counted in `limiter.evictions`, and reported to `onEvict(key)`); several instances that must
+share a budget pass a shared `RateLimitStore` (any object with `consume()`, which may be async).
+
+**Redis sliding window.** `createRedisSlidingWindowStore({ redis, windowMs, max, keyPrefix?,
+retryAfter? })` is that shared store: `max` requests per key in any `windowMs`, kept in one Redis
+sorted set per key, so every process shares it and it survives restarts. Refused requests are
+recorded too, so a client that keeps retrying stays refused. HiveCommon takes no Redis
+dependency: `redis` is anything with an ioredis-style `pipeline()` (`zremrangebyscore`, `zadd`,
+`zcard`, `pexpire`, `exec`; `zrange` for `retryAfter: 'oldest'`), such as an ioredis client, or a
+function returning one. The key passed to `consume()` (after `keyPrefix`, as given) is the Redis
+key, so a product keeps its key format. `retryAfter: 'window'` (the default) tells a refused
+client to wait a whole window; `'oldest'` computes the wait from the entry whose departure lets
+one more request in. A connection or command error is thrown, never read as allowed, so the
+caller decides between a 503 and an in-process fallback:
+
+```ts
+const store = createRedisSlidingWindowStore({ redis, windowMs: 60_000, max: 10, keyPrefix: 'myapp:rl:login:' });
+const fallback = createRateLimiter({ limit: 10, windowMs: 60_000 });
+```
 
 **Middleware.** `/hono` `rateLimit(options)` and `/node-http` `rateLimit(options)` resolve the
 client (Hono reads the socket from `@hono/node-server`; set `peerAddress` elsewhere), build the key
@@ -750,7 +826,25 @@ client (Hono reads the socket from `@hono/node-server`; set `peerAddress` elsewh
 let a request through), spend `cost`, and throw a 429 `HiveError` when refused: code
 `rate_limited`, `Retry-After` in whole seconds and `details.retryAfterSeconds` in the envelope,
 answered by `errorHandler()` or `hiveHandler()`. `headers: true` adds `RateLimit-Limit`,
-`RateLimit-Remaining` and `RateLimit-Reset`. `onLimited` sees each refusal. Hono also sets
+`RateLimit-Remaining` and `RateLimit-Reset`. `onLimited` sees each refusal. `limiter` may be a
+function of the request (`c` or `req`) that picks the store per request (reads and writes on
+separate budgets, say) or returns undefined to let it through. A product with its own 429 body
+passes `respond`: Hono calls `respond(c, refusal)` with `Retry-After` (and the `RateLimit-*`
+headers) already set on `c` and returns its response; `/node-http` calls `respond(req, res,
+refusal)` when the limit is called with `res`, and returns the outcome with `refusal` set so the
+handler stops. `refusal` holds `key`, `client`, `result`, `retryAfterSeconds`, `headers` and the
+default `error`:
+
+```ts
+rateLimit({
+  limiter: c => (c.req.method === 'GET' ? reads : writes),
+  respond: (c, refusal) => c.json({ error: 'RATE_LIMITED', message: 'Too many requests. Please try again later.' }, 429),
+});
+```
+
+`trustedHops` is passed to the client resolution. Adapters for another framework call
+`spendRequestLimit(store, options, trusted, request, key, cost)`, which returns the refusal
+instead of throwing (`limitRequest()` throws it). Hono also sets
 `hiveClientAddress` (`getClientAddress(c)`); `clientAddress(c, trusted)` and
 `clientAddressOf(req, trusted)` resolve it without limiting. For budgets that are not per request
 (per account, per action) call `enforceRateLimit(limiter, key)` or build the error with
@@ -792,7 +886,9 @@ most 4 KiB. Like the HiveEvent validators they drop unknown fields unless `stric
 not valid, moving the cursor past it so a bad row never stalls the collector. `nextCursor` is the
 cursor of the last row read, on every page that read one, and null only when nothing was read.
 The cursor is opaque base64url JSON, `{ i }` for an ID-ordered store and `{ t, i }` for a
-`(time, id)` one (`encodeAuditCursor()`, `decodeAuditCursor()`); `parseAuditExportQuery()` reads
+`(time, id)` one (`encodeAuditCursor()`, `decodeAuditCursor()`). `decodeAuditCursor()` also reads
+the legacy `{ id }` form some products issued before (`eyJpZCI6NX0` is `{ id: 5 }`), and
+`auditExportPage()` takes `encodeCursor(position)` for a product that keeps issuing its own form; `parseAuditExportQuery()` reads
 it with `limit` (100 by default, at most 200). `auditDetails()` flattens a stored detail object to
 scalars through `/log` `redact()`, cuts strings at 512 characters, joins scalar arrays, counts
 other arrays, drops `dropKeys` and nested objects, and drops the longest values (setting

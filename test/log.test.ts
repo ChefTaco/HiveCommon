@@ -30,6 +30,12 @@ describe('redactText', () => {
     ['query token', 'GET /cb?code=abc123&state=s&access_token=zzz', `code=${REDACTED}&state=s&access_token=${REDACTED}`],
     ['assignment', 'password=hunter2 user=bob', `password=${REDACTED} user=bob`],
     ['json-ish assignment', '{"client_secret": "abc"}', `"client_secret": "${REDACTED}"`],
+    // Names that only end in a secret word.
+    ['env token assignment', 'NODE_TOKEN=abc123 NEXT=1', `NODE_TOKEN=${REDACTED} NEXT=1`],
+    ['prefixed password', 'db_password: hunter2', `db_password: ${REDACTED}`],
+    ['prefixed key', 'export MY_API_KEY="abc"', `MY_API_KEY="${REDACTED}"`],
+    ['json prefixed secret', '{"AGENT_SECRET":"abc"}', `"AGENT_SECRET":"${REDACTED}"`],
+    ['camel prefixed token', 'nodeToken=abc', `nodeToken=${REDACTED}`],
   ])('masks a %s', (_name, input, expected) => {
     const output = redactText(input);
     expect(output).toContain(expected);
@@ -43,11 +49,45 @@ describe('redactText', () => {
     }
   });
 
+  it('keeps names that do not end in a secret word', () => {
+    for (const text of ['tokens=5', 'max_tokens: 4096', 'tokenizer=bpe', 'secretary: Alice', 'passwordless=true']) {
+      expect(redactText(text)).toBe(text);
+    }
+  });
+
   it('stays fast on adversarial text', () => {
     const started = performance.now();
-    for (const unit of ['a.', 'eyJaaaaa-', '://a', 'token  ']) redactText(unit.repeat(Math.ceil(100_000 / unit.length)));
+    for (const unit of ['a.', 'eyJaaaaa-', '://a', 'token  ', 'a_', 'a-', 'xtoken_', 'NODE_TOKEN ']) redactText(unit.repeat(Math.ceil(100_000 / unit.length)));
     // Quadratic matching took several seconds here; linear matching takes a few milliseconds.
     expect(performance.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe('redact key patterns and non-string values', () => {
+  it('masks keys matched by a pattern or predicate, even when allow-listed', () => {
+    const input = { nodeTokenRef: 'x', db_passwd_hint: 'y', label: 'z', count: 3 };
+    expect(redact(input, { keyPattern: /token|passwd/gi, allowKeys: ['nodeTokenRef'] })).toEqual({ nodeTokenRef: REDACTED, db_passwd_hint: REDACTED, label: 'z', count: 3 });
+    // A g flag does not make matching stateful.
+    const pattern = /token/g;
+    expect(redact({ aToken: 'x', bToken: 'y' }, { keyPattern: pattern })).toEqual({ aToken: REDACTED, bToken: REDACTED });
+    expect(redact({ customField: 'x', other: 'y' }, { keyPattern: key => key.startsWith('custom') })).toEqual({ customField: REDACTED, other: 'y' });
+  });
+
+  it('masks numbers, booleans and null under sensitive keys when asked', () => {
+    const input = { password: 42, tokenCount: 7, hasSecret: true, api_key: null, nodeToken: undefined, name: 'n', nested: { secret: 1 } };
+    expect(redact(input)).toEqual({ ...input });
+    expect(redact(input, { maskNonStrings: true })).toEqual({ password: REDACTED, tokenCount: REDACTED, hasSecret: REDACTED, api_key: REDACTED, nodeToken: REDACTED, name: 'n', nested: { secret: REDACTED } });
+    // 'listed': only under keys from keys or keyPattern; the built-in names keep their scalars.
+    expect(redact(input, { keyPattern: /^(?:password|api_key)$/, keys: ['nodeToken'], maskNonStrings: 'listed' })).toEqual({
+      password: REDACTED, tokenCount: 7, hasSecret: true, api_key: REDACTED, nodeToken: REDACTED, name: 'n', nested: { secret: 1 },
+    });
+  });
+
+  it('passes the pattern options through the logger', () => {
+    const lines: string[] = [];
+    const logger = createLogger({ write: line => lines.push(line), now: () => 0, context: () => undefined, redactKeyPattern: /ref$/i, redactNonStrings: true });
+    logger.info('x', { secretRef: 'a', password: 5, plain: 1 });
+    expect(JSON.parse(lines[0] as string)).toMatchObject({ secretRef: REDACTED, password: REDACTED, plain: 1 });
   });
 });
 

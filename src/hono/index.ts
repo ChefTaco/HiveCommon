@@ -27,8 +27,9 @@ import { hasAnyRole, hasScopes, requirePermissions, type PermissionOptions } fro
 import type { OathweaveVerifier } from '../oathweave/verifier.js';
 import { readStreamBounded } from '../fetch/index.js';
 import {
-  limitRequest, rateLimitHeaders, resolveClientAddress, resolveTrustedProxies,
-  type ClientAddress, type RateLimitMiddlewareOptions, type RateLimitResult, type TrustedProxies,
+  rateLimitHeaders, resolveClientAddress, resolveTrustedProxies, spendRequestLimit,
+  type ClientAddress, type RateLimitMiddlewareOptions, type RateLimitRefusal, type RateLimitResult,
+  type RateLimitStore, type TrustedProxies,
 } from '../rate-limit/index.js';
 import {
   bodyError, checkContentTypeFirst, declaredLength, maxBodyBytes, parseJsonBody,
@@ -303,7 +304,22 @@ export function getClientAddress(c: Context): ClientAddress | undefined {
   return (c as Context<HiveEnv>).get('hiveClientAddress') as ClientAddress | undefined;
 }
 
-export interface HonoRateLimitOptions extends RateLimitMiddlewareOptions {
+export interface HonoRateLimitOptions extends Omit<RateLimitMiddlewareOptions, 'limiter'> {
+  /**
+   * The limiter (or shared store) to spend from, or a function choosing it per request (for
+   * example a separate budget for reads and writes, or a Redis store with an in-process
+   * fallback). A function that returns undefined lets the request through unlimited.
+   */
+  readonly limiter: RateLimitStore | ((c: Context) => RateLimitStore | undefined);
+  /**
+   * Answer a refusal in the product's own shape instead of throwing the 429 `HiveError` for
+   * `errorHandler()`. Called after `onLimited`, with `Retry-After` (and the `RateLimit-*`
+   * headers when `headers` is on) already set on `c`, so a response made with `c.json()` or
+   * `c.body()` carries them; the handler never runs.
+   *
+   *   respond: (c, refusal) => c.json({ error: 'RATE_LIMITED', message: 'Too many requests' }, 429)
+   */
+  readonly respond?: (c: Context, refusal: RateLimitRefusal) => Response | Promise<Response>;
   /**
    * The key after `prefix`. By default the client address (`addressKey()`). Return undefined to
    * let a request through unlimited (for example an authenticated service).
@@ -325,17 +341,25 @@ export interface HonoRateLimitOptions extends RateLimitMiddlewareOptions {
 export function rateLimit(options: HonoRateLimitOptions): MiddlewareHandler {
   const trusted = resolveTrustedProxies(options.trustedProxies);
   const peerAddress = options.peerAddress ?? nodePeerAddress;
+  const { limiter, respond } = options;
   return async (c, next) => {
-    const cost = typeof options.cost === 'function' ? options.cost(c) : options.cost;
-    const { client, result } = await limitRequest(
-      options, trusted,
+    const store = typeof limiter === 'function' ? limiter(c) : limiter;
+    const cost = store && typeof options.cost === 'function' ? options.cost(c) : options.cost as number | undefined;
+    const { client, result, refusal } = await spendRequestLimit(
+      store, options, trusted,
       { peer: peerAddress(c), forwardedFor: c.req.header('x-forwarded-for') },
       options.key ? keyClient => (options.key as NonNullable<HonoRateLimitOptions['key']>)(c, keyClient) : undefined,
       cost,
     );
     c.set('hiveClientAddress' as never, client as never);
+    if (refusal) {
+      if (!respond) throw refusal.error;
+      for (const [name, value] of Object.entries(refusal.headers)) c.header(name, value);
+      return respond(c, refusal);
+    }
     if (result && options.headers) setRateLimitHeaders(c, result);
     await next();
+    return undefined;
   };
 }
 

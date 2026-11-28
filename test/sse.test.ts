@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  followSse, parseSseBlock, SseEventTooLargeError, SseHandlerError, SseIdleTimeoutError, SseStatusError, type SseEvent, type SseStateChange,
+  followSse, parseSseBlock, parseSseStream, SseEventTooLargeError, SseHandlerError, SseIdleTimeoutError, SseStatusError, type SseEvent, type SseStateChange,
 } from '../src/sse/index.js';
 
 function stream(chunks: string[], { fail = false } = {}): Response {
@@ -384,5 +384,81 @@ describe('followSse 401 renewal', () => {
     });
     await expect(pending).rejects.toThrow('user left');
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('parseSseStream', () => {
+  async function collect(body: ReadableStream<Uint8Array>, options: Parameters<typeof parseSseStream>[1] = {}): Promise<SseEvent[]> {
+    const events: SseEvent[] = [];
+    for await (const event of parseSseStream(body, options)) events.push(event);
+    return events;
+  }
+
+  it('yields events incrementally across chunk boundaries and drops an unterminated final event', async () => {
+    const encoder = new TextEncoder();
+    const euro = encoder.encode('data: €\n\n');
+    const source = tracked(['id: 1\nevent: task.event\ndata: a\r', '\n\r\n', 'data: two\ndata: lines\r\r', euro.slice(0, 7), euro.slice(7), ': ping\n\n', 'data: never finished']);
+    expect(await collect(source.response.body!)).toEqual([
+      { id: '1', event: 'task.event', data: 'a' },
+      { event: 'message', data: 'two\nlines' },
+      { event: 'message', data: '€' },
+    ]);
+  });
+
+  it('keeps id-only events by default and drops data-less events with requireData', async () => {
+    const chunks = ['id: 7\n\n', 'event: hello\n\n', 'data:\n\n', 'data: x\n\n'];
+    expect((await collect(tracked(chunks).response.body!)).map(event => event.data)).toEqual(['', '', '', 'x']);
+    expect(await collect(tracked(chunks).response.body!, { requireData: true })).toEqual([{ event: 'message', data: '' }, { event: 'message', data: 'x' }]);
+  });
+
+  it('bounds an event by maxEventBytes and cancels the body', async () => {
+    const source = tracked(['data: ' + 'x'.repeat(100)], { hang: true });
+    await expect(collect(source.response.body!, { maxEventBytes: 64 })).rejects.toBeInstanceOf(SseEventTooLargeError);
+    expect(source.cancelled()).toBe(true);
+    // A large default: 4 MiB events pass when configured.
+    const big = 'y'.repeat(2 * 1024 * 1024);
+    expect((await collect(tracked([`data: ${big}\n\n`]).response.body!, { maxEventBytes: 4 * 1024 * 1024 }))[0]?.data.length).toBe(big.length);
+    await expect(parseSseStream(tracked([]).response.body!, { maxEventBytes: -1 }).next()).rejects.toThrow(RangeError);
+  });
+
+  it('reports retry values and cancels the body when the caller stops early', async () => {
+    const onRetry = vi.fn();
+    const source = tracked(['retry: 2500\ndata: a\n\ndata: b\n\n'], { hang: true });
+    for await (const event of parseSseStream(source.response.body!, { onRetry })) {
+      expect(event.data).toBe('a');
+      break;
+    }
+    expect(onRetry).toHaveBeenCalledWith(2500);
+    expect(source.cancelled()).toBe(true);
+  });
+
+  it('stops on abort, before and while reading', async () => {
+    const before = new AbortController();
+    before.abort(new Error('gone'));
+    const idle = tracked([], { hang: true });
+    await expect(collect(idle.response.body!, { signal: before.signal })).rejects.toThrow('gone');
+    const plain = new AbortController();
+    plain.abort('not an error');
+    await expect(collect(tracked([]).response.body!, { signal: plain.signal })).rejects.toThrow('Aborted');
+    expect(idle.cancelled()).toBe(true);
+
+    const during = new AbortController();
+    const waiting = tracked(['data: a\n\n'], { hang: true });
+    const seen: string[] = [];
+    const reading = (async () => { for await (const event of parseSseStream(waiting.response.body!, { signal: during.signal })) seen.push(event.data); })();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    during.abort();
+    await expect(reading).rejects.toThrow(/aborted/i);
+    expect(seen).toEqual(['a']);
+    expect(waiting.cancelled()).toBe(true);
+
+    // An abort while the consumer holds an event ends the loop at the next step.
+    const mid = new AbortController();
+    const two = tracked(['data: a\n\ndata: b\n\n'], { hang: true });
+    const got: string[] = [];
+    await expect((async () => {
+      for await (const event of parseSseStream(two.response.body!, { signal: mid.signal })) { got.push(event.data); mid.abort(new Error('stop')); }
+    })()).rejects.toThrow('stop');
+    expect(got).toEqual(['a']);
   });
 });

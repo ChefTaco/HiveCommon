@@ -316,11 +316,19 @@ export function encodeAuditCursor(position: AuditCursorPosition): string {
   return encodeCursor(position.at === undefined ? { i: position.id } : { t: position.at, i: position.id });
 }
 
-/** Read a cursor from `encodeAuditCursor()`; undefined for anything else. */
+/**
+ * Read a cursor from `encodeAuditCursor()`; undefined for anything else. The legacy form
+ * `{ id }` (base64url JSON with a single `id`, as some products issued before the shared
+ * cursor) is read too, as the position `{ id }`.
+ */
 export function decodeAuditCursor(cursor: string): AuditCursorPosition | undefined {
   let value: Record<string, string | number>;
   try { value = decodeCursor(cursor); } catch { return undefined; }
   const keys = Object.keys(value);
+  if (keys.length === 1 && keys[0] === 'id') {
+    const legacy = value['id'];
+    return isPositionId(legacy) ? { id: legacy } : undefined;
+  }
   const id = value['i'];
   const at = value['t'];
   if (!isPositionId(id) || !keys.every(key => key === 'i' || key === 't')) return undefined;
@@ -364,6 +372,12 @@ export interface AuditExportPageOptions<Row> {
   readonly position: (row: Row) => AuditCursorPosition;
   /** Called once with the number of rows read but not exported (unmapped or invalid), when there are any. */
   readonly onDropped?: (count: number) => void;
+  /**
+   * Encode `nextCursor` from the last row's position, for a product that keeps issuing its own
+   * cursor form (`decodeAuditCursor()` must still read it back, or the product decodes it
+   * itself). Must return 1 to 2000 characters. Default `encodeAuditCursor()`.
+   */
+  readonly encodeCursor?: (position: AuditCursorPosition) => string;
 }
 
 /**
@@ -390,5 +404,10 @@ export function auditExportPage<Row>(rows: Iterable<Row>, options: AuditExportPa
     if (read >= options.limit) break;
   }
   if (data.length !== read) options.onDropped?.(read - data.length);
-  return { data, nextCursor: read ? encodeAuditCursor(options.position(last as Row)) : null };
+  if (!read) return { data, nextCursor: null };
+  const nextCursor = (options.encodeCursor ?? encodeAuditCursor)(options.position(last as Row));
+  if (typeof nextCursor !== 'string' || nextCursor.length < 1 || nextCursor.length > 2000) {
+    throw new TypeError('encodeCursor must return a cursor of 1 to 2000 characters');
+  }
+  return { data, nextCursor };
 }
