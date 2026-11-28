@@ -553,7 +553,27 @@ the event again. Every exit releases the connection. The parser is linear and bo
 is building: one over `maxEventBytes` (1 MiB of UTF-8) ends the follow with
 `SseEventTooLargeError`. Set `idleTimeoutMs` (off by default) to a few times the server's heartbeat
 interval to reconnect a connection that has gone silent (`SseIdleTimeoutError` when failures run
-out). A server's `retry: <ms>` sets the wait before reconnecting, capped at the policy's `maxMs`.
+out). A server's `retry: <ms>` sets the wait before reconnecting, capped at the policy's `maxMs`,
+and so does a `Retry-After` on a transient refusal (408, 429, 5xx).
+
+For a UI, `onStateChange` reports `connecting` (before each request), `open` (the server answered
+with a stream) and `retrying` (before the wait, with `delayMs`, `failures` and the `error` that
+ended the connection). A throwing `onStateChange` ends the follow. To renew an expired token
+instead of stopping on a 401, pass `onUnauthorized`:
+
+```ts
+await followSse(url, {
+  headers: async () => ({ authorization: `Bearer ${await token()}` }),
+  onUnauthorized: async () => refreshToken(),      // true: reconnect at once with new headers
+  onStateChange: ({ state, delayMs }) => show(state, delayMs),
+  maxFailures: Infinity, onEvent,
+});
+```
+
+It is called once per 401 and its `true` reconnects at once (`retrying` with `renewed: true`, not
+a failed connection). A 401 on the connection right after a renewal ends the follow with
+`SseStatusError(401)`; a later 401, after a connection opened, is renewed again. `false` stops at
+once, and a rejection counts as a failed connection.
 
 ### registry
 

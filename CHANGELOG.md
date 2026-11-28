@@ -6,6 +6,30 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- `/sse`: `followSse()` option `onStateChange` reports the connection state for a UI:
+  `connecting` before each request, `open` once the server answered with a stream, and
+  `retrying` before the wait for the next connection, with `delayMs`, `failures` and the `error`
+  that ended the connection (types `SseConnectionState` and `SseStateChange`). A throwing
+  callback ends the follow.
+- `/sse`: `followSse()` option `onUnauthorized` renews credentials after a 401 instead of stopping:
+  `true` reconnects at once, calling `headers` again, without counting a failed connection. It is
+  called once per 401; a 401 on the connection right after a renewal ends the follow with
+  `SseStatusError(401)`, while a later 401 (after a connection opened) is renewed again. `false`
+  stops as before; a rejection counts as a failed connection and is retried with backoff.
+
+### Changed
+
+- `/sse`: a `Retry-After` on a transient refusal (408, 429, 5xx) now sets the wait before the next
+  connection, capped at the policy's `maxMs` like the server's `retry:` field. It used to be
+  ignored, so such a follower now reconnects no sooner than the server asked.
+
+### Upgrade notes
+
+- Additive: without the new options `followSse()` behaves as in 0.10.0, except that it honours a
+  refusal's `Retry-After` (at most the policy's `maxMs`, 15 s by default).
+
 ## [0.10.0] - 2026-11-26
 
 ### Added

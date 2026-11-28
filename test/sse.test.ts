@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  followSse, parseSseBlock, SseEventTooLargeError, SseHandlerError, SseIdleTimeoutError, SseStatusError, type SseEvent,
+  followSse, parseSseBlock, SseEventTooLargeError, SseHandlerError, SseIdleTimeoutError, SseStatusError, type SseEvent, type SseStateChange,
 } from '../src/sse/index.js';
 
 function stream(chunks: string[], { fail = false } = {}): Response {
@@ -238,6 +238,151 @@ describe('followSse idle timeout and slow handlers', () => {
       fetch: fetcher, idleTimeoutMs: 20, onEvent: () => new Promise(resolve => setTimeout(resolve, 60)), isTerminal: event => event.event === 'done',
     });
     expect(result).toMatchObject({ cursor: '1', reconnects: 0 });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('followSse connection state', () => {
+  it('reports connecting, open and retrying, with the wait and the reason', async () => {
+    const changes: SseStateChange[] = [];
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(tracked(['id: 1\ndata: a\n\n']).response)
+      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(tracked(['event: done\ndata: b\n\n']).response);
+    const result = await followSse('/s', {
+      fetch: fetcher, policy: fast, onEvent: () => undefined, isTerminal: event => event.event === 'done',
+      onStateChange: change => { changes.push(change); },
+    });
+    expect(result).toMatchObject({ cursor: '1', reconnects: 2 });
+    expect(changes.map(change => change.state)).toEqual(['connecting', 'open', 'retrying', 'connecting', 'retrying', 'connecting', 'open']);
+    expect(changes[0]).toEqual({ state: 'connecting', connection: 0, cursor: undefined });
+    expect(changes[1]).toEqual({ state: 'open', connection: 0, cursor: undefined });
+    // A clean close after events reconnects at once and is not a failure.
+    expect(changes[2]).toEqual({ state: 'retrying', connection: 0, cursor: '1', delayMs: 0, failures: 0 });
+    expect(changes[4]).toMatchObject({ state: 'retrying', connection: 1, cursor: '1', delayMs: 1, failures: 1 });
+    expect((changes[4]!.error as Error).message).toBe('The event stream answered HTTP 503');
+    expect(changes[5]).toEqual({ state: 'connecting', connection: 2, cursor: '1' });
+  });
+
+  it('ends the follow when the state callback throws, without counting it as a failed connection', async () => {
+    const fetcher = vi.fn(async () => tracked(['data: a\n\n']).response);
+    await expect(followSse('/s', {
+      fetch: fetcher, policy: fast, onEvent: () => undefined,
+      onStateChange: change => { if (change.state === 'open') throw new Error('render failed'); },
+    })).rejects.toThrow('render failed');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await expect(followSse('/s', {
+      fetch: fetcher, onEvent: () => undefined, onStateChange: () => { throw new Error('at connect'); },
+    })).rejects.toThrow('at connect');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a Retry-After on a transient refusal, capped at the policy maximum', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn()
+        .mockResolvedValueOnce(new Response('slow down', { status: 429, headers: { 'retry-after': '3' } }))
+        .mockResolvedValueOnce(new Response('down', { status: 503, headers: { 'retry-after': '120' } }))
+        .mockResolvedValueOnce(tracked(['event: done\ndata: c\n\n']).response);
+      const policy = { maxAttempts: Number.MAX_SAFE_INTEGER, baseMs: 1, maxMs: 5000, jitter: 'none' as const };
+      const delays: Array<number | undefined> = [];
+      const pending = followSse('/s', {
+        fetch: fetcher, policy, onEvent: () => undefined, isTerminal: () => true,
+        onStateChange: change => { if (change.state === 'retrying') delays.push(change.delayMs); },
+      });
+      await vi.advanceTimersByTimeAsync(2999);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({ reconnects: 2 });
+      expect(delays).toEqual([3000, 5000]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('followSse 401 renewal', () => {
+  const bearer = (calls: unknown[][]) => calls.map(call => ((call[1] as RequestInit).headers as Record<string, string>).authorization);
+
+  it('renews once after a 401 and reconnects at once with fresh headers', async () => {
+    let token = 'fixture-token-1';
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+      .mockResolvedValueOnce(tracked(['event: done\ndata: x\n\n']).response);
+    const onUnauthorized = vi.fn(async () => { token = 'fixture-token-2'; return true; });
+    const changes: SseStateChange[] = [];
+    const result = await followSse('/s', {
+      fetch: fetcher, after: '4', headers: () => ({ authorization: `Bearer ${token}` }), onUnauthorized,
+      onEvent: () => undefined, isTerminal: () => true, onStateChange: change => { changes.push(change); },
+    });
+    expect(result.reconnects).toBe(1);
+    expect(onUnauthorized).toHaveBeenCalledExactlyOnceWith(401);
+    expect(bearer(fetcher.mock.calls)).toEqual(['Bearer fixture-token-1', 'Bearer fixture-token-2']);
+    expect(changes.map(change => change.state)).toEqual(['connecting', 'retrying', 'connecting', 'open']);
+    expect(changes[1]).toEqual({ state: 'retrying', connection: 0, cursor: '4', delayMs: 0, failures: 0, renewed: true });
+  });
+
+  it('stops when the connection right after a renewal answers 401 again', async () => {
+    const fetcher = vi.fn(async () => new Response('no', { status: 401 }));
+    const onUnauthorized = vi.fn(() => true);
+    const failure = await followSse('/s', { fetch: fetcher, policy: fast, onUnauthorized, onEvent: () => undefined }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SseStatusError);
+    expect((failure as SseStatusError).status).toBe(401);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('renews again for a later 401, once a connection has opened in between', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+      .mockResolvedValueOnce(tracked(['id: 1\ndata: a\n\n']).response)
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+      .mockResolvedValueOnce(tracked(['event: done\ndata: b\n\n']).response);
+    const onUnauthorized = vi.fn(async () => true);
+    const result = await followSse('/s', { fetch: fetcher, policy: fast, onUnauthorized, onEvent: () => undefined, isTerminal: event => event.event === 'done' });
+    expect(result).toMatchObject({ cursor: '1', reconnects: 3 });
+    expect(onUnauthorized).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops with the 401 when the renewal declines, and without a hook as before', async () => {
+    const fetcher = vi.fn(async () => new Response('no', { status: 401 }));
+    await expect(followSse('/s', { fetch: fetcher, onUnauthorized: () => false, onEvent: () => undefined })).rejects.toBeInstanceOf(SseStatusError);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await expect(followSse('/s', { fetch: fetcher, onEvent: () => undefined })).rejects.toBeInstanceOf(SseStatusError);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a renewal that failed, with backoff, and renews again on the next 401', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+      .mockResolvedValueOnce(tracked(['event: done\ndata: x\n\n']).response);
+    const onUnauthorized = vi.fn().mockRejectedValueOnce(new Error('identity provider down')).mockResolvedValueOnce(true);
+    const changes: SseStateChange[] = [];
+    const result = await followSse('/s', {
+      fetch: fetcher, policy: fast, onUnauthorized, onEvent: () => undefined, isTerminal: () => true,
+      onStateChange: change => { changes.push(change); },
+    });
+    expect(result.reconnects).toBe(2);
+    expect(onUnauthorized).toHaveBeenCalledTimes(2);
+    const retrying = changes.filter(change => change.state === 'retrying');
+    expect(retrying[0]).toMatchObject({ failures: 1, delayMs: 1 });
+    expect((retrying[0]!.error as Error).message).toBe('identity provider down');
+    expect(retrying[1]).toMatchObject({ failures: 1, delayMs: 0, renewed: true });
+  });
+
+  it('passes a caller abort through while renewing', async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(async () => new Response('expired', { status: 401 }));
+    const pending = followSse('/s', {
+      fetch: fetcher, signal: controller.signal, onEvent: () => undefined,
+      onUnauthorized: () => new Promise<boolean>(() => { controller.abort(new Error('user left')); }),
+    });
+    await expect(pending).rejects.toThrow('user left');
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });
