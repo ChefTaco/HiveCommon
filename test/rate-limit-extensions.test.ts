@@ -177,6 +177,30 @@ describe('createRedisSlidingWindowStore', () => {
   });
 });
 
+describe('trustedProxies address families', () => {
+  it('never lets an IPv6 range trust an IPv4 peer', () => {
+    for (const range of ['::/0', '::/80', '::/96']) {
+      const proxies = trustedProxies(range);
+      expect(proxies.has('203.0.113.1')).toBe(false);
+      expect(proxies.has('::ffff:203.0.113.1')).toBe(false);
+    }
+    expect(trustedProxies('::/0').has('2001:db8::1')).toBe(true);
+  });
+  it('keeps IPv4 ranges for IPv4 peers, written plainly or as mapped addresses', () => {
+    const proxies = trustedProxies('10.0.0.0/8, ::ffff:192.0.2.1');
+    expect(proxies.has('10.1.2.3')).toBe(true);
+    expect(proxies.has('::ffff:10.1.2.3')).toBe(true);
+    expect(proxies.has('192.0.2.1')).toBe(true);
+    expect(proxies.has('2001:db8::1')).toBe(false);
+  });
+  it('refuses an IPv4-mapped range, which is ambiguous', () => {
+    expect(() => trustedProxies('::ffff:10.0.0.0/8')).toThrow(/IPv4 form/);
+    expect(() => trustedProxies('::ffff:10.0.0.0/104')).toThrow(TypeError);
+    expect(() => trustedProxies('::ffff:0:0/96')).toThrow(/IPv4 form/);
+    expect(() => trustedProxies('[::ffff:10.0.0.0]/8')).toThrow(/IPv4 form/);
+  });
+});
+
 describe('trustedProxies wildcards', () => {
   it('matches IPv4 wildcards part by part, as TRUSTED_PROXY_IPS lists them', () => {
     const proxies = trustedProxies('10.*.*.*, 192.0.2.*, 198.51.*.7, 2001:db8::/32');

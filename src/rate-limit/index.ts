@@ -135,7 +135,10 @@ const IPV4_WILDCARD = /^(?:\*|25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:\*|25[0-5]
  */
 export function trustedProxies(config: string | readonly string[] | undefined | null): TrustedProxies {
   const raw = typeof config === 'string' ? config.split(/[\s,]+/) : [...(config ?? [])];
-  const list = new BlockList();
+  // One list per family: Node's BlockList applies an IPv6 subnet that covers ::ffff:0:0/96 to every
+  // IPv4 address, so `::/0` would otherwise trust every IPv4 peer.
+  const ipv4 = new BlockList();
+  const ipv6 = new BlockList();
   const entries: string[] = [];
   const wildcards: Array<readonly string[]> = [];
   const add = (entry: string): void => {
@@ -150,11 +153,15 @@ export function trustedProxies(config: string | readonly string[] | undefined | 
     if (!address || extra.length || addressPart !== addressPart?.trim() || (prefixPart !== undefined && !/^\d{1,3}$/.test(prefixPart))) {
       throw new TypeError(`Not a trusted proxy address or range: ${entry}`);
     }
+    // `::ffff:10.0.0.0/8` is ambiguous (an IPv4 /8, or the IPv6 /8 it is written as): write the IPv4 range.
+    if (prefixPart !== undefined && isIP(address) === 4 && (addressPart ?? '').includes(':')) {
+      throw new TypeError(`Write an IPv4-mapped range in IPv4 form (for example 10.0.0.0/8): ${entry}`);
+    }
     const family = isIP(address) === 4 ? 'ipv4' : 'ipv6';
     const max = family === 'ipv4' ? 32 : 128;
     const prefix = prefixPart === undefined ? max : Number(prefixPart);
     if (prefix > max) throw new TypeError(`Not a trusted proxy address or range: ${entry}`);
-    list.addSubnet(address, prefix, family);
+    (family === 'ipv4' ? ipv4 : ipv6).addSubnet(address, prefix, family);
     entries.push(`${address}/${prefix}`);
   };
   for (const item of raw) {
@@ -169,8 +176,8 @@ export function trustedProxies(config: string | readonly string[] | undefined | 
     has(address) {
       const normalized = normalizeIpAddress(address);
       if (normalized === undefined) return false;
-      if (isIP(normalized) !== 4) return list.check(normalized, 'ipv6');
-      if (list.check(normalized, 'ipv4')) return true;
+      if (isIP(normalized) !== 4) return ipv6.check(normalized, 'ipv6');
+      if (ipv4.check(normalized, 'ipv4')) return true;
       if (!wildcards.length) return false;
       const octets = normalized.split('.');
       return wildcards.some(parts => parts.every((part, index) => part === '*' || part === octets[index]));
