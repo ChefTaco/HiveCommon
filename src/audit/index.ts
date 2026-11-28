@@ -8,7 +8,7 @@
  */
 import { isProductId, isRfc3339Utc, type ValidationResult } from '../contracts/index.js';
 import { HiveError } from '../errors/index.js';
-import { decodeCursor, encodeCursor, parseFeedQuery } from '../internal/cursor.js';
+import { decodeCursor, encodeCursor, FEED_CURSOR_PATTERN, parseFeedQuery } from '../internal/cursor.js';
 import { redact } from '../log/redact.js';
 
 export const HIVE_AUDIT_EXPORT_PATH = '/v1/audit/export';
@@ -308,19 +308,35 @@ function isPositionId(value: unknown): value is string | number {
     || (typeof value === 'string' && value.length >= 1 && value.length <= MAX_CURSOR_TEXT);
 }
 
-/** The opaque cursor for a position: base64url JSON `{ i, t? }`. */
+/**
+ * The opaque cursor for a position: base64url JSON `{ i, t? }`. Throws a TypeError for a position
+ * whose cursor would not pass `parseAuditExportQuery()` (more than 512 characters: a string id
+ * and time of more than about 180 characters together), so no page ever carries a cursor its
+ * own export refuses.
+ */
 export function encodeAuditCursor(position: AuditCursorPosition): string {
   if (!isPositionId(position.id) || (position.at !== undefined && (typeof position.at !== 'string' || !position.at || position.at.length > MAX_CURSOR_TEXT))) {
     throw new TypeError('An audit cursor needs a non-negative integer or short string id, and an optional short time');
   }
-  return encodeCursor(position.at === undefined ? { i: position.id } : { t: position.at, i: position.id });
+  const cursor = encodeCursor(position.at === undefined ? { i: position.id } : { t: position.at, i: position.id });
+  if (!FEED_CURSOR_PATTERN.test(cursor)) throw new TypeError('The audit cursor for this position is longer than 512 characters');
+  return cursor;
 }
 
-/** Read a cursor from `encodeAuditCursor()`; undefined for anything else. */
+/**
+ * Read a cursor from `encodeAuditCursor()`; undefined for anything else. The legacy form
+ * `{ id }` (base64url JSON with a single `id`, as some products issued before the shared
+ * cursor) is read too, as the position `{ id }`.
+ */
 export function decodeAuditCursor(cursor: string): AuditCursorPosition | undefined {
+  if (typeof cursor !== 'string' || !FEED_CURSOR_PATTERN.test(cursor)) return undefined;
   let value: Record<string, string | number>;
   try { value = decodeCursor(cursor); } catch { return undefined; }
   const keys = Object.keys(value);
+  if (keys.length === 1 && keys[0] === 'id') {
+    const legacy = value['id'];
+    return isPositionId(legacy) ? { id: legacy } : undefined;
+  }
   const id = value['i'];
   const at = value['t'];
   if (!isPositionId(id) || !keys.every(key => key === 'i' || key === 't')) return undefined;
@@ -364,6 +380,13 @@ export interface AuditExportPageOptions<Row> {
   readonly position: (row: Row) => AuditCursorPosition;
   /** Called once with the number of rows read but not exported (unmapped or invalid), when there are any. */
   readonly onDropped?: (count: number) => void;
+  /**
+   * Encode `nextCursor` from the last row's position, for a product that keeps issuing its own
+   * cursor form (`decodeAuditCursor()` must still read it back, or the product decodes it
+   * itself). It must return what `parseAuditExportQuery()` accepts as `after`: 1 to 512
+   * characters of `[A-Za-z0-9._~:-]` (base64url fits). Default `encodeAuditCursor()`.
+   */
+  readonly encodeCursor?: (position: AuditCursorPosition) => string;
 }
 
 /**
@@ -390,5 +413,10 @@ export function auditExportPage<Row>(rows: Iterable<Row>, options: AuditExportPa
     if (read >= options.limit) break;
   }
   if (data.length !== read) options.onDropped?.(read - data.length);
-  return { data, nextCursor: read ? encodeAuditCursor(options.position(last as Row)) : null };
+  if (!read) return { data, nextCursor: null };
+  const nextCursor = (options.encodeCursor ?? encodeAuditCursor)(options.position(last as Row));
+  if (typeof nextCursor !== 'string' || !FEED_CURSOR_PATTERN.test(nextCursor)) {
+    throw new TypeError('encodeCursor must return 1 to 512 characters of [A-Za-z0-9._~:-]');
+  }
+  return { data, nextCursor };
 }

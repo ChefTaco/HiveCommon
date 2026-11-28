@@ -49,9 +49,13 @@ export const OATHWEAVE_DEFAULT_CLOCK_TOLERANCE_SEC = 30;
 /** Longest accepted compact token. Real Oathweave tokens are well under 4 KiB. */
 export const OATHWEAVE_MAX_TOKEN_LENGTH = 16_384;
 
-export interface OathweaveVerifierOptions extends EndpointOptions {
-  /** Accepted issuer, or issuers. Each must be an https URL. */
-  readonly issuer: string | readonly string[];
+export interface OathweaveVerifierOptions extends EndpointOptions, JwksRefreshOptions {
+  /**
+   * Accepted issuer, or issuers. Each must be an https URL. May be omitted (or empty) only for
+   * a service-only verifier of native-issuer tokens: `nativeIssuers` non-empty, `accept:
+   * 'service'` and `nativeIssuerAccept: 'service'` (the default).
+   */
+  readonly issuer?: string | readonly string[];
   /**
    * Oathweave's native issuer identifiers (its `JWT_ISSUER`, for example `hive-iam`) to accept
    * as well. Oathweave signs client-credentials tokens with its native issuer unless the
@@ -153,11 +157,95 @@ export function parseBearerToken(header: string | null | undefined): string | un
   return match[1];
 }
 
+/** The largest JWKS response read when `jwksStaleIfErrorMs`, `onJwksRefresh` or `onJwksError` is set. */
+export const OATHWEAVE_JWKS_MAX_BYTES = 262_144;
+/** The longest `jwksStaleIfErrorMs`: keys older than a day are never trusted on a failed refresh. */
+export const OATHWEAVE_JWKS_MAX_STALE_MS = 86_400_000;
+
+/** A successful JWKS fetch (`onJwksRefresh`). */
+export interface JwksRefreshEvent {
+  /** How many keys the set holds. */
+  readonly keys: number;
+  /** Epoch milliseconds. */
+  readonly fetchedAt: number;
+}
+
+/** A failed JWKS fetch (`onJwksError`). */
+export interface JwksErrorEvent {
+  /** Why: the transport error, a non-200 status, an oversized or malformed key set. Never logged with a token. */
+  readonly error: unknown;
+  /** True when the last good key set was served instead (within `jwksStaleIfErrorMs`). */
+  readonly stale: boolean;
+  /** Milliseconds since the last good key set was fetched; undefined when there was none. */
+  readonly ageMs: number | undefined;
+}
+
+/** JWKS refresh behaviour for a verifier that fetches `jwksUrl`. Ignored with `keys`. */
+export interface JwksRefreshOptions {
+  /**
+   * When a refresh fails, keep trusting the last good key set if it was fetched at most this
+   * many milliseconds ago (stale-if-error), instead of answering `jwks_unavailable`. The stale
+   * set is then trusted for another `jwksCacheMaxAgeMs`, so a key set is never trusted longer
+   * than this plus `jwksCacheMaxAgeMs` after its fetch. 0 (the default) never serves stale keys.
+   * At most `OATHWEAVE_JWKS_MAX_STALE_MS`. An unknown `kid` is still refused while stale.
+   */
+  readonly jwksStaleIfErrorMs?: number;
+  /** Called after every successful JWKS fetch, for metrics. A throw is ignored. */
+  readonly onJwksRefresh?: (event: JwksRefreshEvent) => void;
+  /** Called after every failed JWKS fetch, for metrics. A throw is ignored. */
+  readonly onJwksError?: (event: JwksErrorEvent) => void;
+}
+
+function isJwksLike(value: unknown): value is { keys: unknown[] } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = (value as { keys?: unknown }).keys;
+  return Array.isArray(keys) && keys.every(key => !!key && typeof key === 'object' && !Array.isArray(key));
+}
+
+function quietly<T>(callback: ((event: T) => void) | undefined, event: T): void {
+  try { callback?.(event); } catch { /* a metrics callback never changes the answer */ }
+}
+
+/**
+ * The JWKS transport with refresh reporting and stale-if-error: the response is read (bounded)
+ * and checked to be a key set before jose sees it, so a failure is known here.
+ */
+function jwksTransport(request: typeof fetch, options: JwksRefreshOptions): (url: string, init: RequestInit) => Promise<Response> {
+  const staleMs = options.jwksStaleIfErrorMs ?? 0;
+  let lastGood: { body: string; fetchedAt: number } | undefined;
+  const answer = (body: string): Response => new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+  return async (url, init) => {
+    let body: string;
+    let count: number;
+    try {
+      const response = await request(url, init);
+      if (response.status !== 200) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`The JWKS endpoint answered HTTP ${response.status}`);
+      }
+      const json = await readJsonBounded(response, OATHWEAVE_JWKS_MAX_BYTES, init.signal ? { signal: init.signal } : {});
+      if (!isJwksLike(json)) throw new Error('The JWKS endpoint did not answer a key set');
+      body = JSON.stringify(json);
+      count = json.keys.length;
+    } catch (error) {
+      const ageMs = lastGood ? Date.now() - lastGood.fetchedAt : undefined;
+      const stale = lastGood !== undefined && ageMs !== undefined && staleMs > 0 && ageMs <= staleMs;
+      quietly(options.onJwksError, { error, stale, ageMs });
+      if (stale && lastGood) return answer(lastGood.body);
+      throw error;
+    }
+    const fetchedAt = Date.now();
+    lastGood = { body, fetchedAt };
+    quietly(options.onJwksRefresh, { keys: count, fetchedAt });
+    return answer(body);
+  };
+}
+
 /** Errors from the key source that mean "could not get keys", not "bad token". */
 export class KeySourceUnavailable extends Error {}
 
 /** Where a verifier gets its keys: a local JWKS, a jose resolver or the issuer's JWKS URL. */
-export interface KeySourceOptions {
+export interface KeySourceOptions extends JwksRefreshOptions {
   readonly jwksUrl?: string | undefined;
   readonly keys?: JSONWebKeySet | JWTVerifyGetKey | undefined;
   readonly jwksCacheMaxAgeMs?: number | undefined;
@@ -171,11 +259,20 @@ export function keySource(options: KeySourceOptions, request: typeof fetch, time
   else if (options.keys) resolver = createLocalJWKSet(options.keys);
   else {
     if (!options.jwksUrl) throw new TypeError('Oathweave jwksUrl is required unless keys are given');
+    const stale = options.jwksStaleIfErrorMs;
+    if (stale !== undefined && !(typeof stale === 'number' && Number.isFinite(stale) && stale >= 0 && stale <= OATHWEAVE_JWKS_MAX_STALE_MS)) {
+      throw new TypeError(`jwksStaleIfErrorMs must be 0-${OATHWEAVE_JWKS_MAX_STALE_MS}`);
+    }
+    for (const name of ['onJwksRefresh', 'onJwksError'] as const) {
+      if (options[name] !== undefined && typeof options[name] !== 'function') throw new TypeError(`${name} must be a function`);
+    }
+    const reported = stale || options.onJwksRefresh || options.onJwksError;
+    const transport = reported ? jwksTransport(request, options) : request;
     resolver = createRemoteJWKSet(new URL(options.jwksUrl), {
       timeoutDuration: timeoutMs,
       cacheMaxAge: options.jwksCacheMaxAgeMs ?? 10 * 60_000,
       cooldownDuration: options.jwksCooldownMs ?? 30_000,
-      [customFetch]: (url, init) => request(url, { ...init, redirect: 'error' }),
+      [customFetch]: (url, init) => transport(url, { ...init, redirect: 'error' }),
     });
   }
   return async (header, token) => {
@@ -230,12 +327,15 @@ function lifetimeLimits(value: number | OathweaveLifetimeLimits | undefined): Re
 
 /** Create a verifier. Throws a TypeError at startup when the configuration is unsafe. */
 export function createOathweaveVerifier(options: OathweaveVerifierOptions): OathweaveVerifier {
-  const issuers = typeof options.issuer === 'string' ? [options.issuer] : [...options.issuer];
-  if (!issuers.length) throw new TypeError('At least one Oathweave issuer is required');
+  const issuers = options.issuer === undefined ? [] : typeof options.issuer === 'string' ? [options.issuer] : [...options.issuer];
   for (const issuer of issuers) assertOathweaveEndpoint(issuer, 'issuer', options);
   const nativeIssuers = nativeIssuerList(options.nativeIssuers, 'Oathweave nativeIssuers');
   const nativeIssuerAccept = options.nativeIssuerAccept ?? 'service';
   if (!ACCEPT_VALUES.includes(nativeIssuerAccept)) throw new TypeError("nativeIssuerAccept must be 'user', 'service' or 'any'");
+  // Without an https issuer only native-issuer service tokens can verify; say so at startup.
+  if (!issuers.length && !(nativeIssuers.length && options.accept === 'service' && nativeIssuerAccept === 'service')) {
+    throw new TypeError("At least one Oathweave issuer is required, unless nativeIssuers are listed with accept: 'service'");
+  }
   if (options.jwksUrl !== undefined) assertOathweaveEndpoint(options.jwksUrl, 'jwksUrl', options);
   if (options.userinfoUrl !== undefined) assertOathweaveEndpoint(options.userinfoUrl, 'userinfoUrl', options);
   if (typeof options.audience !== 'string' || !options.audience) throw new TypeError('Oathweave audience is required');

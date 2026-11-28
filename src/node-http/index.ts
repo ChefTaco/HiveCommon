@@ -27,8 +27,9 @@ import {
 } from '../internal/body.js';
 
 import {
-  limitRequest, rateLimitHeaders, resolveClientAddress, resolveTrustedProxies,
-  type ClientAddress, type RateLimitMiddlewareOptions, type RateLimitResult, type TrustedProxies,
+  rateLimitHeaders, resolveClientAddress, resolveTrustedProxies, spendRequestLimit,
+  type ClientAddress, type RateLimitMiddlewareOptions, type RateLimitRefusal, type RateLimitResult,
+  type RateLimitStore, type TrustedProxies,
 } from '../rate-limit/index.js';
 
 export { DEFAULT_MAX_BODY_BYTES, type BodyProblem, type JsonBody, type ReadBodyLimits, type ReadJsonBodyOptions } from '../internal/body.js';
@@ -273,7 +274,19 @@ export function clientAddressOf(req: IncomingMessage, trusted: TrustedProxies): 
   return resolveClientAddress({ peer: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'], trusted });
 }
 
-export interface NodeRateLimitOptions extends RateLimitMiddlewareOptions {
+export interface NodeRateLimitOptions extends Omit<RateLimitMiddlewareOptions, 'limiter'> {
+  /**
+   * The limiter (or shared store) to spend from, or a function choosing it per request. A
+   * function that returns undefined lets the request through unlimited.
+   */
+  readonly limiter: RateLimitStore | ((req: IncomingMessage) => RateLimitStore | undefined);
+  /**
+   * Answer a refusal in the product's own shape instead of throwing the 429 `HiveError`. Used
+   * when the limit is called with `res`: the refusal's headers are set on `res` first, then this
+   * writes the response, and the call returns the outcome with `refusal` set, so the handler
+   * must stop there. Without `res` the 429 is thrown as before.
+   */
+  readonly respond?: (req: IncomingMessage, res: ServerResponse, refusal: RateLimitRefusal) => void | Promise<void>;
   /** The key after `prefix`. By default the client address (`addressKey()`); undefined lets the request through. */
   readonly key?: (req: IncomingMessage, client: ClientAddress) => string | undefined | Promise<string | undefined>;
   /** Tokens a request spends. 1. */
@@ -284,9 +297,10 @@ export interface NodeRateLimit {
   /**
    * Spend for one request. Throws a 429 `HiveError` (`rate_limited`, `Retry-After`,
    * `details.retryAfterSeconds`) when refused: inside `hiveHandler()` it is answered as the
-   * envelope. Returns the client and the result (undefined when `key` skipped the request).
+   * envelope. Returns the client and the result (undefined when `key` or `limiter` skipped the
+   * request). With `respond` and `res`, a refusal is answered instead and returned as `refusal`.
    */
-  (req: IncomingMessage, res?: ServerResponse): Promise<{ readonly client: ClientAddress; readonly result: RateLimitResult | undefined }>;
+  (req: IncomingMessage, res?: ServerResponse): Promise<{ readonly client: ClientAddress; readonly result: RateLimitResult | undefined; readonly refusal?: RateLimitRefusal }>;
 }
 
 /**
@@ -297,17 +311,28 @@ export interface NodeRateLimit {
  */
 export function rateLimit(options: NodeRateLimitOptions): NodeRateLimit {
   const trusted = resolveTrustedProxies(options.trustedProxies);
+  // Resolving once at setup validates trustedHops, so a bad value fails at startup.
+  if (options.trustedHops !== undefined) resolveClientAddress({ peer: undefined, trusted, trustedHops: options.trustedHops });
+  const { limiter, respond } = options;
   return async (req, res) => {
-    const cost = typeof options.cost === 'function' ? options.cost(req) : options.cost;
-    const outcome = await limitRequest(
-      options, trusted,
+    const store = typeof limiter === 'function' ? limiter(req) : limiter;
+    const cost = store && typeof options.cost === 'function' ? options.cost(req) : options.cost as number | undefined;
+    const outcome = await spendRequestLimit(
+      store, options, trusted,
       { peer: req.socket.remoteAddress, forwardedFor: req.headers['x-forwarded-for'] },
       options.key ? client => (options.key as NonNullable<NodeRateLimitOptions['key']>)(req, client) : undefined,
       cost,
     );
-    if (outcome.result && options.headers && res && !res.headersSent) {
-      for (const [name, value] of Object.entries(rateLimitHeaders(outcome.result))) res.setHeader(name, value);
+    const { client, result, refusal } = outcome;
+    if (refusal) {
+      if (!respond || !res) throw refusal.error;
+      if (!res.headersSent) for (const [name, value] of Object.entries(refusal.headers)) res.setHeader(name, value);
+      await respond(req, res, refusal);
+      return outcome;
     }
-    return outcome;
+    if (result && options.headers && res && !res.headersSent) {
+      for (const [name, value] of Object.entries(rateLimitHeaders(result))) res.setHeader(name, value);
+    }
+    return { client, result };
   };
 }

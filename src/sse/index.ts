@@ -1,5 +1,6 @@
 /**
- * Follow a server-sent event stream with cursor-based reconnect.
+ * Follow a server-sent event stream with cursor-based reconnect (`followSse()`), or parse one
+ * response body incrementally (`parseSseStream()`).
  *
  * Isomorphic: uses `fetch` and web streams, so it runs in Node and in browsers, and unlike
  * `EventSource` it can send authorization headers. After a dropped or closed connection it
@@ -194,7 +195,7 @@ class SseParser {
   /** The latest valid `retry:` value. */
   retryMs: number | undefined;
 
-  constructor(private readonly maxBytes: number) {}
+  constructor(private readonly maxBytes: number, private readonly requireData = false) {}
 
   /** Feed decoded text; returns the events it completed, in order. */
   push(text: string): SseEvent[] {
@@ -226,7 +227,7 @@ class SseParser {
 
   private line(line: string, bytes: number, events: SseEvent[]): void {
     if (!line) {
-      const event = finish(this.state);
+      const event = this.requireData && !this.state.data.length ? undefined : finish(this.state);
       this.state = emptyBlock();
       this.blockBytes = 0;
       if (event) events.push(event);
@@ -241,6 +242,71 @@ class SseParser {
 
   private check(extra: number): void {
     if (this.blockBytes + extra > this.maxBytes) throw new SseEventTooLargeError(this.maxBytes);
+  }
+}
+
+export interface ParseSseStreamOptions {
+  /** The largest event accepted, as for `followSse()`. Default 1 MiB; a larger one throws `SseEventTooLargeError`. */
+  readonly maxEventBytes?: number;
+  /** Stops reading: the generator throws the signal's reason (an `Error`) and cancels the body. */
+  readonly signal?: AbortSignal;
+  /**
+   * Dispatch only events with at least one `data:` line, as `EventSource` does. Off by default,
+   * where an event with only an `id:` or `event:` field is yielded too (with `data: ''`), as
+   * `followSse()` handles it.
+   */
+  readonly requireData?: boolean;
+  /** Called when the server sent a valid `retry:` value (the latest one of each chunk read). */
+  readonly onRetry?: (retryMs: number) => void;
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Aborted');
+}
+
+/**
+ * Parse a `text/event-stream` body incrementally, yielding each event as soon as its blank line
+ * arrives: the parser `followSse()` uses, for a caller that reads one response itself. Linear in
+ * the input and bounded by `maxEventBytes`; CRLF, LF and CR line ends (also split across chunks);
+ * comments skipped; a final event without its blank line is dropped. Breaking out of the loop,
+ * an error or an abort cancels the body.
+ *
+ *   for await (const event of parseSseStream(response.body!, { maxEventBytes: 4 * 1024 * 1024 })) handle(event);
+ */
+export async function* parseSseStream(body: ReadableStream<Uint8Array>, options: ParseSseStreamOptions = {}): AsyncGenerator<SseEvent, void, undefined> {
+  const maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_SSE_EVENT_BYTES;
+  assertNonNegative('maxEventBytes', maxEventBytes);
+  const { signal, onRetry } = options;
+  if (signal?.aborted) {
+    await body.cancel().catch(() => undefined);
+    throw abortReason(signal);
+  }
+  const reader = body.getReader();
+  const parser = new SseParser(maxEventBytes, options.requireData ?? false);
+  const decoder = new TextDecoder();
+  let onAbort: (() => void) | undefined;
+  const stopped = signal ? new Promise<never>((_, reject) => {
+    onAbort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+  }) : undefined;
+  stopped?.catch(() => undefined);
+  try {
+    for (;;) {
+      const { value, done } = await (stopped ? Promise.race([reader.read(), stopped]) : reader.read());
+      if (done) return;
+      const events = parser.push(decoder.decode(value, { stream: true }));
+      if (parser.retryMs !== undefined) {
+        onRetry?.(parser.retryMs);
+        parser.retryMs = undefined;
+      }
+      for (const event of events) {
+        yield event;
+        if (signal?.aborted) throw abortReason(signal);
+      }
+    }
+  } finally {
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+    void reader.cancel().catch(() => undefined);
   }
 }
 

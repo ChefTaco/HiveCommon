@@ -148,9 +148,34 @@ describe('cursors and queries', () => {
     for (const position of [{ id: -1 }, { id: 1.5 }, { id: '' }, { id: 'x'.repeat(257) }, { id: 1, at: '' }, { id: 1, at: 5 as unknown as string }]) {
       expect(() => encodeAuditCursor(position)).toThrow(TypeError);
     }
-    for (const cursor of ['!!', encodeCursor({ id: 1 }), encodeCursor({ i: 1, x: 2 }), encodeCursor({ i: -3 }), encodeCursor({ i: 1, t: 2 }), encodeCursor({ i: 1, t: '' })]) {
+    for (const cursor of ['!!', encodeCursor({ id: -1 }), encodeCursor({ id: 1, i: 1 }), encodeCursor({ id: 1, t: 'x' }), encodeCursor({ i: 1, x: 2 }), encodeCursor({ i: -3 }), encodeCursor({ i: 1, t: 2 }), encodeCursor({ i: 1, t: '' })]) {
       expect(decodeAuditCursor(cursor)).toBeUndefined();
     }
+  });
+
+  it('never issues a cursor its own query parser refuses', () => {
+    // Every position the encoder accepts yields a cursor parseAuditExportQuery() reads back.
+    const fits = { id: 'i'.repeat(180), at: 't'.repeat(180) };
+    const cursor = encodeAuditCursor(fits);
+    expect(cursor.length).toBeLessThanOrEqual(512);
+    expect(parseAuditExportQuery(new URLSearchParams({ after: cursor })).after).toEqual(fits);
+    expect(parseAuditExportQuery(new URLSearchParams({ after: encodeAuditCursor({ id: 'i'.repeat(256) }) })).after).toEqual({ id: 'i'.repeat(256) });
+    // Too long together (or with characters that JSON escapes): refused at encoding, not by the collector later.
+    expect(() => encodeAuditCursor({ id: 'i'.repeat(256), at: 't'.repeat(256) })).toThrow(/512/);
+    expect(() => encodeAuditCursor({ id: '\u0001'.repeat(100) })).toThrow(/512/);
+    expect(() => auditExportPage([1], { limit: 1, toRecord: () => undefined, position: () => ({ id: 'i'.repeat(256), at: 't'.repeat(256) }) })).toThrow(TypeError);
+    // A cursor longer than the query allows is not decoded either.
+    expect(decodeAuditCursor(encodeCursor({ i: 'i'.repeat(400) }))).toBeUndefined();
+  });
+
+  it('reads the legacy { id } cursor form', () => {
+    // A product cursor issued before the shared format: base64url JSON { id }.
+    expect(encodeCursor({ id: 5 })).toBe('eyJpZCI6NX0');
+    expect(decodeAuditCursor('eyJpZCI6NX0')).toEqual({ id: 5 });
+    expect(decodeAuditCursor(encodeCursor({ id: 'op-9' }))).toEqual({ id: 'op-9' });
+    expect(decodeAuditCursor(encodeCursor({ id: 1.5 }))).toBeUndefined();
+    expect(decodeAuditCursor(encodeCursor({ id: 'x'.repeat(257) }))).toBeUndefined();
+    expect(parseAuditExportQuery(new URLSearchParams('after=eyJpZCI6NX0'))).toEqual({ after: { id: 5 }, limit: 100 });
   });
 
   it('parses the export query with the suite defaults', () => {
@@ -158,7 +183,7 @@ describe('cursors and queries', () => {
     expect(parseAuditExportQuery({ limit: '500', after: encodeAuditCursor({ id: 9 }) })).toEqual({ after: { id: 9 }, limit: 200 });
     expect(parseAuditExportQuery(new URLSearchParams('limit=5'), { defaultLimit: 50, maxLimit: 1000 })).toEqual({ after: undefined, limit: 5 });
     expect(parseAuditExportQuery(new URLSearchParams('limit=999'), { maxLimit: 1000 }).limit).toBe(200);
-    expect(() => parseAuditExportQuery(new URLSearchParams(`after=${encodeCursor({ id: 1 })}`))).toThrow(expect.objectContaining({ code: 'invalid_cursor', status: 400 }));
+    expect(() => parseAuditExportQuery(new URLSearchParams(`after=${encodeCursor({ id: 1, x: 1 })}`))).toThrow(expect.objectContaining({ code: 'invalid_cursor', status: 400 }));
     let error: unknown;
     try { parseAuditExportQuery(new URLSearchParams('limit=0')); } catch (caught) { error = caught; }
     expect(HiveError.is(error, 'invalid_query')).toBe(true);
@@ -198,6 +223,16 @@ describe('auditExportPage', () => {
     expect(allSkipped.nextCursor).not.toBeNull();
     expect(() => auditExportPage(rows, { limit: 0, toRecord, position: row => ({ id: row.id }) })).toThrow(RangeError);
     expect(() => auditExportPage(rows, { limit: 201, toRecord, position: row => ({ id: row.id }) })).toThrow(RangeError);
+  });
+
+  it('issues the product\'s own cursor form through encodeCursor', () => {
+    const page = auditExportPage(rows, { limit: 4, toRecord, position: row => ({ id: row.id }), encodeCursor: position => encodeCursor({ id: position.id }) });
+    expect(page.nextCursor).toBe(encodeCursor({ id: 4 }));
+    expect(decodeAuditCursor(page.nextCursor as string)).toEqual({ id: 4 });
+    expect(auditExportPage([], { limit: 4, toRecord, position: row => ({ id: row.id }), encodeCursor: () => 'unused' }).nextCursor).toBeNull();
+    for (const bad of ['', 'x'.repeat(513), 'a/b', 'a=b', 'a b', 5 as unknown as string]) {
+      expect(() => auditExportPage(rows, { limit: 1, toRecord, position: row => ({ id: row.id }), encodeCursor: () => bad })).toThrow(TypeError);
+    }
   });
 
   it('reads lazily from an iterable and stops at the limit', () => {

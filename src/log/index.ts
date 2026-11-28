@@ -3,7 +3,7 @@
  * request ID and trace ID added automatically from the request context.
  */
 import { getRequestContext, type RequestContext } from '../context/index.js';
-import { redact } from './redact.js';
+import { redact, type RedactOptions } from './redact.js';
 
 export { redact, redactHeaders, redactText, isSensitiveKey, REDACTED, type RedactOptions } from './redact.js';
 
@@ -39,6 +39,10 @@ export interface LoggerOptions {
   readonly redactKeys?: readonly string[];
   /** Keys never masked for their name (see `RedactOptions.allowKeys`); their values are still scrubbed. */
   readonly redactAllowKeys?: readonly string[];
+  /** Extra keys to redact by pattern (see `RedactOptions.keyPattern`). */
+  readonly redactKeyPattern?: RegExp | ((key: string) => boolean);
+  /** Mask numbers and booleans under sensitive keys too (see `RedactOptions.maskNonStrings`). */
+  readonly redactNonStrings?: boolean | 'listed';
   /** Include `err.stack` for Error fields. Off by default. */
   readonly stacks?: boolean;
   readonly now?: () => number;
@@ -85,6 +89,12 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const now = options.now ?? (() => Date.now());
   const context = options.context ?? getRequestContext;
   const bindings = options.bindings ?? {};
+  const redactOptions: RedactOptions = {
+    keys: options.redactKeys ?? [],
+    ...(options.redactAllowKeys ? { allowKeys: options.redactAllowKeys } : {}),
+    ...(options.redactKeyPattern ? { keyPattern: options.redactKeyPattern } : {}),
+    ...(options.redactNonStrings !== undefined ? { maskNonStrings: options.redactNonStrings } : {}),
+  };
 
   const emit = (entryLevel: LogLevel, message: string, fields: LogFields | undefined): void => {
     if (SEVERITY[entryLevel] < threshold) return;
@@ -96,7 +106,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     };
     // Reserved fields win over bindings so a caller cannot forge them.
     const entry = {
-      ...(shouldRedact ? redact(merged, { keys: options.redactKeys ?? [], ...(options.redactAllowKeys ? { allowKeys: options.redactAllowKeys } : {}) }) : merged),
+      ...(shouldRedact ? redact(merged, redactOptions) : merged),
       time: new Date(now()).toISOString(),
       level: entryLevel,
       msg: shouldRedact ? redact(message) : message,

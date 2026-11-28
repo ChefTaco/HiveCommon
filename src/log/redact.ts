@@ -44,7 +44,10 @@ const TEXT_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/(:\/\/)[^\s/@?#]+@/g, `$1${REDACTED}@`],
   // Secret-looking query parameters and key=value / key: value pairs.
   [/([?&](?:access_token|refresh_token|id_token|token|code|client_secret|secret|client_assertion|assertion|jwt|api_key|apikey|key|password|sig|signature)=)[^&#\s]+/gi, `$1${REDACTED}`],
-  [/\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password|passwd|private[_-]?key)["']?\s*[:=]\s*["']?)[^"',\s}&]+/gi, `$1${REDACTED}`],
+  // The name may carry any prefix that ends in the secret word (`NODE_TOKEN=`, `db_password:`).
+  // The prefix stops at the first character that is not a word character, so each word is
+  // scanned once and matching stays linear.
+  [/\b([A-Za-z0-9_]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password|passwd|private[_-]?key)["']?\s*[:=]\s*["']?)[^"',\s}&]+/gi, `$1${REDACTED}`],
 ];
 
 /** Scrub credentials out of free text. */
@@ -58,6 +61,18 @@ export interface RedactOptions {
   /** Extra keys to mask, compared case-insensitively and exactly. */
   readonly keys?: readonly string[];
   /**
+   * Extra keys to mask by pattern: a regular expression tested against the key as written
+   * (`/token|secret/i`; a `g` or `y` flag is ignored), or a predicate. Like `keys`, it wins
+   * over `allowKeys`.
+   */
+  readonly keyPattern?: RegExp | ((key: string) => boolean);
+  /**
+   * Also mask numbers, booleans, null and undefined under sensitive keys, which are kept by
+   * default (token counts, `hasPassword` flags): `true` under every sensitive key, `'listed'`
+   * only under keys matched by `keys` or `keyPattern`.
+   */
+  readonly maskNonStrings?: boolean | 'listed';
+  /**
    * Keys that are never masked for their name, compared case-insensitively and exactly: for
    * identifiers whose name merely contains a secret-looking word (`authorizationId`,
    * `tokenCount`, `credentialType`). Their values are still traversed and scrubbed with
@@ -70,12 +85,17 @@ export interface RedactOptions {
 /**
  * A deep copy of `value` with secrets masked. Sensitive keys holding strings, objects or
  * arrays are replaced by `[REDACTED]`; numbers and booleans under such keys (token counts,
- * `hasPassword` flags) are kept. Strings everywhere are scrubbed with `redactText()`.
+ * `hasPassword` flags) are kept unless `maskNonStrings` says otherwise. Strings everywhere are scrubbed with `redactText()`.
  * Errors become `{ name, message, code? }`; cycles become `[Circular]`.
  */
 export function redact<T>(value: T, options: RedactOptions = {}): T {
   const extra = new Set((options.keys ?? []).map(key => key.toLowerCase()));
   const allowed = new Set((options.allowKeys ?? []).map(key => key.toLowerCase()));
+  const pattern = options.keyPattern;
+  const matches: (key: string) => boolean = pattern === undefined ? () => false
+    : typeof pattern === 'function' ? pattern
+      : (() => { const regex = new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '')); return (key: string) => regex.test(key); })();
+  const maskNonStrings = options.maskNonStrings ?? false;
   const seen = new WeakSet<object>();
   const visit = (item: unknown, depth: number): unknown => {
     if (typeof item === 'string') return redactText(item);
@@ -104,8 +124,10 @@ export function redact<T>(value: T, options: RedactOptions = {}): T {
       const result: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(item)) {
         const lower = key.toLowerCase();
-        const sensitive = extra.has(lower) || (!allowed.has(lower) && isSensitiveKey(key));
-        result[key] = sensitive && (typeof child === 'string' || (typeof child === 'object' && child !== null))
+        const listed = extra.has(lower) || matches(key);
+        const sensitive = listed || (!allowed.has(lower) && isSensitiveKey(key));
+        const maskAll = maskNonStrings === true || (maskNonStrings === 'listed' && listed);
+        result[key] = sensitive && (maskAll || typeof child === 'string' || (typeof child === 'object' && child !== null))
           ? REDACTED
           : visit(child, depth + 1);
       }
