@@ -6,6 +6,7 @@
  * reconnects with the last event ID it handled (`Last-Event-ID`), waiting with backoff after
  * failures, until `isTerminal` accepts an event, the handler throws, or `signal` aborts.
  */
+import { retryAfterMs } from '../contracts/index.js';
 import { backoffDelay, sleepAbortable, type RetryPolicy } from '../retry/index.js';
 
 export interface SseEvent {
@@ -17,6 +18,28 @@ export interface SseEvent {
 }
 
 export type SseFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+/**
+ * Where the follower is, for a UI that shows it: `connecting` before each request, `open` once the
+ * server answered with a stream, `retrying` before the wait that precedes the next connection.
+ */
+export type SseConnectionState = 'connecting' | 'open' | 'retrying';
+
+export interface SseStateChange {
+  readonly state: SseConnectionState;
+  /** The connection this is about: 0 for the first, one more for each reconnect. */
+  readonly connection: number;
+  /** The cursor the connection resumes from (`connecting`, `open`) or the next one will (`retrying`). */
+  readonly cursor: string | undefined;
+  /** `retrying` only: the wait before the next connection, in milliseconds (0 for at once). */
+  readonly delayMs?: number;
+  /** `retrying` only: consecutive failed connections so far (a renewal does not count as one). */
+  readonly failures?: number;
+  /** `retrying` only: why the connection ended. Undefined for a clean close or a renewal. */
+  readonly error?: unknown;
+  /** `retrying` only: the connection answered 401 and `onUnauthorized` renewed the credentials. */
+  readonly renewed?: boolean;
+}
 
 export interface FollowSseOptions {
   /** Headers for every connection, or a function called before each one (for fresh tokens). */
@@ -37,9 +60,19 @@ export interface FollowSseOptions {
   readonly isTerminal?: (event: SseEvent) => boolean;
   /** Called on every (re)connection, with the cursor it resumed from. */
   readonly onConnect?: (cursor: string | undefined, reconnect: number) => void;
+  /** Called on every state change (see `SseConnectionState`). A throw here ends the follow. */
+  readonly onStateChange?: (change: SseStateChange) => void;
+  /**
+   * Called when a connection answers 401, to renew the credentials `headers` returns (for example
+   * by refreshing a token). Resolve `true` to reconnect at once, calling `headers` again; `false`
+   * ends the follow with `SseStatusError(401)`, as without this hook. It is called once per 401:
+   * when the connection right after a renewal answers 401 again, the follow ends without another
+   * renewal. A rejection counts as a failed connection, retried with backoff.
+   */
+  readonly onUnauthorized?: (status: 401) => boolean | Promise<boolean>;
   /** Backoff between failed connections. A clean close reconnects at once (or after the server's `retry:`). */
   readonly policy?: RetryPolicy;
-  /** Consecutive failed connections tolerated before giving up. Default 8. */
+  /** Consecutive failed connections tolerated before giving up. Default 8; `Infinity` never gives up. */
   readonly maxFailures?: number;
   /**
    * The largest event accepted, in bytes of UTF-8 text, counting every field line of the event
@@ -91,6 +124,11 @@ export class SseEventTooLargeError extends Error {
 export class SseIdleTimeoutError extends Error {
   override readonly name = 'SseIdleTimeoutError';
   constructor(readonly idleTimeoutMs: number) { super('The event stream was idle for too long'); }
+}
+
+/** Carries an `onStateChange` error past the connection's failure handling. */
+class StateCallbackFailure {
+  constructor(readonly error: unknown) {}
 }
 
 const RECONNECT_POLICY: RetryPolicy = { maxAttempts: Number.MAX_SAFE_INTEGER, baseMs: 500, maxMs: 15_000, jitter: 'equal' };
@@ -230,11 +268,23 @@ export async function followSse(url: string, options: FollowSseOptions): Promise
   let reconnects = 0;
   let failures = 0;
   let serverRetryMs: number | undefined;
+  // Set by a renewal after a 401 and cleared once a connection opens: one renewal per 401.
+  let renewed = false;
+  const notify = options.onStateChange;
+  // Inside a connection's try block, so that a throwing callback ends the follow rather than
+  // counting as a failed connection.
+  const notifyInside = (change: SseStateChange): void => {
+    try { notify?.(change); } catch (error) { throw new StateCallbackFailure(error); }
+  };
   for (let connection = 0; ; connection++) {
     if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new Error('Aborted');
     if (connection > 0) reconnects++;
     options.onConnect?.(cursor, connection);
+    notify?.({ state: 'connecting', connection, cursor });
     let progressed = false;
+    let lastError: unknown;
+    // A `Retry-After` on a transient refusal (408, 429, 5xx), for the next wait only.
+    let statusRetryMs: number | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     // Per connection: an idle timeout aborts this connection only, never the caller's signal.
     const local = new AbortController();
@@ -261,10 +311,21 @@ export async function followSse(url: string, options: FollowSseOptions): Promise
       }));
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
+        if (response.status === 401 && options.onUnauthorized && !renewed) {
+          clearTimeout(timer);
+          if (!await guarded(Promise.resolve(options.onUnauthorized(401)))) throw new SseStatusError(401);
+          renewed = true;
+          // Reconnect at once with fresh headers; a renewal is not a failed connection.
+          notifyInside({ state: 'retrying', connection, cursor, delayMs: 0, failures, renewed: true });
+          continue;
+        }
         if (response.status !== 408 && response.status !== 429 && response.status < 500) throw new SseStatusError(response.status);
+        statusRetryMs = retryAfterMs(response.headers.get('retry-after'));
         throw new Error(`The event stream answered HTTP ${response.status}`);
       }
       if (!response.body) throw new Error('The event stream has no body');
+      renewed = false;
+      notifyInside({ state: 'open', connection, cursor });
       reader = response.body.getReader();
       const decoder = new TextDecoder();
       const parser = new SseParser(maxEventBytes);
@@ -293,7 +354,9 @@ export async function followSse(url: string, options: FollowSseOptions): Promise
       // A clean close (a server that rotates long streams): reconnect at once.
       if (!progressed) failures++;
     } catch (error: unknown) {
+      if (error instanceof StateCallbackFailure) throw error.error;
       if (options.signal?.aborted || error instanceof SseStatusError || error instanceof SseHandlerError || error instanceof SseEventTooLargeError) throw error;
+      lastError = error;
       if (!progressed) failures++;
       if (failures >= maxFailures) throw error;
     } finally {
@@ -304,9 +367,11 @@ export async function followSse(url: string, options: FollowSseOptions): Promise
     }
     if (failures >= maxFailures) throw new Error('The event stream kept closing without events');
     // The server's `retry:` sets the reconnect wait, capped at the policy's longest backoff.
-    const requested = serverRetryMs === undefined ? 0 : Math.min(serverRetryMs, policy.maxMs);
+    // So does a `Retry-After` on a refused connection, with the same cap.
+    const requested = Math.min(Math.max(serverRetryMs ?? 0, statusRetryMs ?? 0), policy.maxMs);
     const backoff = failures > 0 ? backoffDelay(Math.min(failures, 30), { ...policy, maxAttempts: Number.MAX_SAFE_INTEGER }) ?? policy.maxMs : 0;
     const delay = Math.max(backoff, requested);
+    notify?.({ state: 'retrying', connection, cursor, delayMs: delay, failures, ...(lastError !== undefined ? { error: lastError } : {}) });
     if (delay > 0) await sleepAbortable(delay, options.signal);
   }
 }
