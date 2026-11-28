@@ -6,6 +6,19 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- `/rate-limit` `trustedProxies()`: an IPv6 range no longer trusts IPv4 peers. Node's `BlockList`
+  applies an IPv6 subnet that covers `::ffff:0:0/96` (`::/0` to `::/96`) to every IPv4 address, so
+  `::/0` used to trust every IPv4 proxy. IPv4 and IPv6 ranges are now matched against their own
+  family only.
+
+### Changed
+
+- `trustedProxies()` refuses a range written as an IPv4-mapped IPv6 address (`::ffff:10.0.0.0/8`,
+  `::ffff:0:0/96`), which used to be read as an IPv4 range; write it in IPv4 form (`10.0.0.0/8`). A
+  single IPv4-mapped address without a prefix is still accepted.
+
 ## [0.11.0] - 2026-11-28
 
 ### Added
