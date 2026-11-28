@@ -6,6 +6,8 @@ All notable changes to `@hivemagnus/hive-common` are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-28
+
 ### Fixed
 
 - `/rate-limit` `trustedProxies()`: an IPv6 range no longer trusts IPv4 peers. Node's `BlockList`
@@ -508,7 +510,8 @@ verifier and its own error, health and request-ID conventions.
   pagination and agent identity.
 - `/hono` and `/node-http` adapters for auth, request context, the error envelope and health.
 
-[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/ChefTaco/HiveCommon/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/ChefTaco/HiveCommon/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ChefTaco/HiveCommon/compare/v0.8.0...v0.9.0
